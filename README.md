@@ -37,6 +37,21 @@ newer and experimental FFI flags. See [Images](#images).
 
 ## Install
 
+Until the packages are available from npm, install the two tarballs from the
+GitHub Release. Replace `v0.1.0` with the release that you want:
+
+```sh
+bun add \
+  https://github.com/simonklee/opentui-tex/releases/download/v0.1.0/simonklee-opentui-tex-0.1.0.tgz \
+  https://github.com/simonklee/opentui-tex/releases/download/v0.1.0/simonklee-opentui-tex-native-0.1.0.tgz
+```
+
+The native release tarball contains all eight platform libraries and selects
+the correct one at runtime. It is larger than the eventual npm package, which
+will use platform-specific optional dependencies.
+
+After the npm release, install from the registry:
+
 ```sh
 npm install @simonklee/opentui-tex
 npm install @simonklee/opentui-tex-native   # optional image output
