@@ -45,7 +45,7 @@ npm install @simonklee/opentui-tex
 npm install @simonklee/opentui-tex-native   # optional image output
 ```
 
-`bun add` works the same. The native package selects a prebuilt library for
+`bun add` also works. The native package selects a prebuilt library for
 the host platform through optional dependencies. Prebuilt libraries exist for
 x64 and arm64 on macOS, Windows, Linux glibc 2.17, and Linux musl.
 
@@ -81,13 +81,15 @@ Options beyond `BoxOptions`:
 - `imageOptions` — options for the installed `ImageRenderable`.
 - `onError` — receives backend errors.
 
-Assigning `formula.formula` installs a synchronous Unicode preview and queues
-the selected backend. A native result upgrades the same `TexRenderable` to an
-image. `formula.whenReady()` follows replacements and resolves after
-`TexRenderable` installs the latest request. `formula.ready` exposes the
-current individual request. `setColors()` rerenders after a terminal theme
-change. `TexRenderable` aborts stale and destroyed-node requests. With
-`streaming: true`, only the synchronous Unicode preview updates, and the
+When you assign `formula.formula`, `TexRenderable` installs a synchronous
+Unicode preview and queues the selected backend. A native result upgrades the
+same `TexRenderable` to an image. `formula.whenReady()` tracks replacements
+and resolves after `TexRenderable` installs the latest request.
+`formula.ready` exposes the current individual request. `setColors()`
+rerenders after a terminal theme change. `TexRenderable` aborts stale and
+destroyed-node requests.
+
+With `streaming: true`, only the synchronous Unicode preview updates. The
 layout renders incomplete trailing constructs as `□` placeholders.
 
 Failure behavior is explicit. `fallback: "unicode"` keeps the semantic
@@ -97,12 +99,13 @@ preview. `"retain"` restores the previous successful backend result.
 
 Applications must share one backend across their `TexRenderable`s. The
 receiver owns image outputs from a `TexBackend` and must dispose them.
-`TexRenderable` manages images returned by its backend, including stale and
-retained-fallback outputs, so most applications never touch an image.
+`TexRenderable` manages the images that its backend returns, including stale
+and retained-fallback outputs. Thus most applications do not manage images
+directly.
 
 ## React and Solid
 
-Registration follows the other OpenTUI extension packages:
+Registration uses the same pattern as the other OpenTUI extension packages:
 
 ```ts
 import { registerTex } from "@simonklee/opentui-tex/react"; // or @simonklee/opentui-tex/solid
@@ -111,8 +114,8 @@ registerTex();
 ```
 
 `registerTex()` registers a `<tex>` component with reactive `formula`,
-`streaming`, `display`, `foreground`, and `background` props. The remaining
-`TexRenderable` options pass through unchanged:
+`streaming`, `display`, `foreground`, and `background` props. The component
+forwards the remaining `TexRenderable` options unchanged:
 
 ```tsx
 <tex
@@ -185,9 +188,9 @@ background as its key.
 
 `NativeImage.fromRgba()` copies the borrowed result pixels synchronously into
 OpenTUI ownership, and `TexRenderable` passes that image directly to
-`ImageRenderable`. This path performs no image encoding or decoding. It is
-not zero-copy, because RGBA still crosses the JavaScript FFI boundary between
-the two native libraries.
+`ImageRenderable`. This path does not encode or decode images. It is not
+zero-copy, because RGBA still crosses the JavaScript FFI boundary between the
+two native libraries.
 
 MicroTeX's embedded font context is process-global. The library cannot
 initialize and release it per formula. Instead, it initializes the context
@@ -199,8 +202,8 @@ avoids mutexes and cross-isolate shutdown ownership.
 Ownership rules for direct use:
 
 - Direct callers of `NativeTexRenderer.renderAsync()` must dispose each
-  returned image. Cached results use independent retained references, so
-  disposal of one result does not invalidate another.
+  returned image. Cached results use independent retained references. When you
+  dispose one result, the other results stay valid.
 - `NativeImage.takeRaw()` requires exclusive ownership. Dispose all retained
   references, including renderer cache and renderable references, before you
   call it.
@@ -229,8 +232,8 @@ node --permission --allow-fs-read=<application> --allow-ffi --experimental-ffi a
 
 The portable Unicode package does not require those flags. The native context
 is process-owned. Node 26.4 can retain its experimental FFI handle during
-shutdown, so short-lived Node programs can need an explicit `process.exit()`
-after `NativeTexRenderer.destroy()`.
+shutdown. Thus short-lived Node programs sometimes need an explicit
+`process.exit()` after `NativeTexRenderer.destroy()`.
 
 Two environment variables override library resolution. Standalone executables
 can extract the selected shared library and set `OPENTUI_LATEX_NATIVE_PATH` to
@@ -261,13 +264,14 @@ bun start        # or: bun run start:node
 The demo is a borderless markdown-style editor and preview with inline `$...$`
 and display `$$...$$` formulas. It starts with `UnicodeTexBackend`. Press
 `Ctrl+U` to switch to native image formulas. The native backend loads only on
-first use. Press `?` for all shortcuts. The preview is a native
-`ScrollBoxRenderable`, so scrolling uses OpenTUI's normal viewport and culling
-path. The demo bounds its own state: source content of 64 KiB, 128 formulas
-per content revision, one editor debounce timer, and one optional demo-stream
-timer.
+first use. Press `?` for all shortcuts.
 
-OpenTUI's markdown custom-node hook operates at block-token level and does not
+The preview is a native `ScrollBoxRenderable`, so scrolling uses OpenTUI's
+normal viewport and culling path. The demo bounds its own state: source
+content of 64 KiB, 128 formulas per content revision, one editor debounce
+timer, and one optional demo-stream timer.
+
+OpenTUI's markdown custom-node hook operates at the block-token level and does not
 expose an inline-math token. The demo therefore uses a small bounded
 markdown/math adapter (`src/document.ts`) for paragraphs. In an application
 with its own markdown AST, map text nodes to `TextRenderable` and math nodes
