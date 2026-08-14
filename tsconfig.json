@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleDetection": "force",
+    "moduleResolution": "NodeNext",
+    "baseUrl": ".",
+    "paths": {
+      "@simonklee/opentui-tex": ["src/index.ts"],
+      "@simonklee/opentui-tex-native": ["packages/latex-native/src/index.ts"]
+    },
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": ["bun", "node"]
+  },
+  "include": ["src/**/*.ts", "demo/**/*.ts"]
+}

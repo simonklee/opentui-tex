@@ -1,0 +1,35 @@
+diff --git a/src/svg.zig b/src/svg.zig
+--- a/src/svg.zig
++++ b/src/svg.zig
+@@ -45,6 +45,7 @@ pub const Svg = struct {
+                 try self.path.append(allocator, ' ');
+             }
+-            var path_writer = self.path.writer(allocator).adaptToNewApi(&.{});
+-            try path_writer.new_interface.print(fmt, args);
++            var path_writer = std.Io.Writer.Allocating.fromArrayList(allocator, &self.path);
++            defer self.path = path_writer.toArrayList();
++            try path_writer.writer.print(fmt, args);
+         }
+     };
+diff --git a/src/root.zig b/src/root.zig
+--- a/src/root.zig
++++ b/src/root.zig
+@@ -112,14 +112,13 @@ pub const TexSvgRender = struct {
+                 },
+             }
+         }
+-        var buf = std.ArrayList(u8).empty;
+-        defer buf.deinit(allocator);
+-        var buf_writer = buf.writer(allocator).adaptToNewApi(&.{});
+-        try s.write(&buf_writer.new_interface, .{
++        var buf_writer: std.Io.Writer.Allocating = .init(allocator);
++        defer buf_writer.deinit();
++        try s.write(&buf_writer.writer, .{
+             .full_header = opts.full_header,
+             .svg_content = tex,
+             .class = opts.class,
+         });
+-        return buf.toOwnedSlice(allocator);
++        return buf_writer.toOwnedSlice();
+     }
+ };

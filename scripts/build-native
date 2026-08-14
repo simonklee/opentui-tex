@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+usage() {
+  echo "usage: scripts/build-native [--all] [--target ZIG_TARGET]" >&2
+  exit 2
+}
+
+all=false
+target=
+while (($#)); do
+  case "$1" in
+    --all) $all && usage; all=true; shift ;;
+    --target) [[ $# -ge 2 && -z "$target" ]] || usage; target=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+$all && [[ -n "$target" ]] && usage
+
+if ! $all && [[ -z "$target" ]]; then
+  target=$(bun -e '
+    const arch = process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : ""
+    if (!arch) throw new Error(`unsupported native architecture: ${process.arch}`)
+    if (process.platform === "darwin") console.log(`${arch}-macos.13.0`)
+    else if (process.platform === "win32") console.log(`${arch}-windows-gnu`)
+    else if (process.platform === "linux") {
+      const configured = process.env.OPENTUI_LIBC
+      if (configured && !["gnu", "glibc", "musl"].includes(configured)) throw new Error(`unsupported OPENTUI_LIBC: ${configured}`)
+      const report = process.report?.getReport()
+      const abi = configured === "musl" || (!configured && !report?.header?.glibcVersionRuntime) ? "musl" : "gnu.2.17"
+      console.log(`${arch}-linux-${abi}`)
+    } else throw new Error(`unsupported native platform: ${process.platform}`)
+  ')
+fi
+
+bash scripts/bootstrap-native
+rm -rf zig-out/lib
+
+zig_args=(build -Doptimize=ReleaseSmall)
+$all && zig_args+=(-Dall)
+[[ -n "$target" ]] && zig_args+=("-Dtarget=$target")
+zig "${zig_args[@]}"
+
+package_args=()
+$all && package_args+=(--all)
+[[ -n "$target" ]] && package_args+=(--target "$target")
+bun scripts/package-native.ts "${package_args[@]}"

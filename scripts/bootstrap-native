@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+readonly vendor=native/vendor
+readonly stamp="$vendor/.bootstrap-v5"
+readonly stamp_value='zigtex=fda2819e45f57ca2071810c47249a46bfc782cdf microtex=74e8fee9e47edc3a777e64fb2eff9a85a01defac nanosvg=239e102ec2c691f2902e20ace2ed36ee4a35cfe6 zig=0.16-v5'
+mkdir -p "$vendor"
+
+download() {
+  local url=$1 output=$2
+  curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+    --connect-timeout 20 --max-time 180 "$url" --output "$output"
+}
+
+fetch_file() {
+  local name=$1 url=$2 expected=$3 path="$vendor/$1" temporary
+  if [[ -f "$path" ]] && echo "$expected  $path" | sha256sum --check --status; then
+    return
+  fi
+  temporary=$(mktemp "$vendor/.download.XXXXXX")
+  trap 'rm -f "$temporary"' RETURN
+  download "$url" "$temporary"
+  echo "$expected  $temporary" | sha256sum --check --status
+  mv "$temporary" "$path"
+  trap - RETURN
+}
+
+fetch_archive() {
+  local name=$1 url=$2 expected=$3 archive temporary
+  archive=$(mktemp "$vendor/.archive.XXXXXX")
+  temporary=$(mktemp -d "$vendor/.extract.XXXXXX")
+  trap 'rm -rf "$archive" "$temporary"' RETURN
+  download "$url" "$archive"
+  echo "$expected  $archive" | sha256sum --check --status
+  tar --extract --gzip --file "$archive" --directory "$temporary" --strip-components=1
+  rm -rf "$vendor/$name"
+  mv "$temporary" "$vendor/$name"
+  rm -f "$archive"
+  trap - RETURN
+}
+
+fetch_file nanosvg.h \
+  https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/src/nanosvg.h \
+  e34fd5d084be106cea972d19ce5d27fd96d17ba89f8d06bdceee058420c8b2b0
+fetch_file nanosvgrast.h \
+  https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/src/nanosvgrast.h \
+  79a9c5f4db19debf9f3a648a1589e96d92854f245a5cb4f3d823f263785234d8
+fetch_file LICENSE-NANOSVG \
+  https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/LICENSE.txt \
+  e82bc3dd03400aecabe12201219ba14750dbc4b36faab58663a7a6068548d372
+
+if [[ ! -f "$stamp" ]] || [[ "$(<"$stamp")" != "$stamp_value" ]]; then
+  fetch_archive zigtex \
+    https://github.com/fjebaker/zigtex/archive/fda2819e45f57ca2071810c47249a46bfc782cdf.tar.gz \
+    ea2923b8a731e80820b2f0ded97a3c57a5933da46fde7ab1350fe79aff3e00cc
+  fetch_archive microtex \
+    https://github.com/fjebaker/MicroTeX/archive/74e8fee9e47edc3a777e64fb2eff9a85a01defac.tar.gz \
+    8da1600f75a674d465715b1d3e0c2bfd84adab128b45e91253ecfa46f856a963
+
+  sed -i \
+    -e 's#            .url = .*#            .path = "../microtex",#' \
+    -e '/            .hash = /d' \
+    "$vendor/zigtex/build.zig.zon"
+  sed -i \
+    -e 's/conf_header.getOutput()/conf_header.getOutputFile()/' \
+    -e 's/lib.linkLibCpp();/lib.root_module.link_libcpp = true;/' \
+    -e 's/lib.addConfigHeader/lib.root_module.addConfigHeader/g' \
+    -e 's/lib.addIncludePath/lib.root_module.addIncludePath/g' \
+    -e 's/lib.addCSourceFiles/lib.root_module.addCSourceFiles/g' \
+    -e 's/exe.addIncludePath/exe.root_module.addIncludePath/g' \
+    -e 's/exe.addCSourceFiles/exe.root_module.addCSourceFiles/g' \
+    -e 's/exe.linkLibrary/exe.root_module.linkLibrary/g' \
+    -e '/            .optimize = optimize,/a\            .pic = true,' \
+    "$vendor/microtex/build.zig"
+  patch --directory "$vendor/zigtex" --strip 1 < native/zigtex-0.16.patch
+  sed -i \
+    's/c.microtex_init(content.len, content.ptr)/c.microtex_init(@intCast(content.len), content.ptr)/' \
+    "$vendor/zigtex/src/tex.zig"
+  printf '%s\n' "$stamp_value" > "$stamp"
+fi
+
+for required in \
+  "$vendor/zigtex/LICENSE" \
+  "$vendor/microtex/LICENSE" \
+  "$vendor/microtex/res/lm-math/README"; do
+  [[ -s "$required" ]] || { echo "required vendor file is missing: $required" >&2; exit 1; }
+done

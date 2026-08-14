@@ -1,0 +1,12 @@
+.{
+    .name = .latex_renderer,
+    .fingerprint = 0x7ef7d1d7f7d59666,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigtex = .{
+            .path = "native/vendor/zigtex",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "native" },
+}
