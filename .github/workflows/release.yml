@@ -25,7 +25,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  # setup-zig includes the job ID in its cache key; match CI to reuse native builds.
+  native-packages:
+    name: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +70,7 @@ jobs:
 
   publish:
     if: ${{ github.event_name == 'release' || !inputs.dry-run }}
-    needs: build
+    needs: native-packages
     runs-on: ubuntu-latest
     environment: npm
     permissions:
