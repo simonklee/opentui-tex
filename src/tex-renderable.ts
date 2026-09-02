@@ -178,6 +178,16 @@ export class TexRenderable extends BoxRenderable {
     // Intrinsic formulas stay compact under stretch, but still inherit center/end alignment.
     const resolved = crossAuto && alignment === Yoga.Align.Stretch ? Yoga.Align.FlexStart : this.requestedAlignSelf
     if (this.yogaNode.getAlignSelf() !== resolved) this.yogaNode.setAlignSelf(resolved)
+    for (const child of this.getChildren()) {
+      const options = child instanceof ImageRenderable ? this.imageOptions : undefined
+      const node = child.getLayoutNode()
+      const shrink = options?.flexShrink ?? 1
+      const flexible = shrink > 0 && node.getPositionType() !== Yoga.PositionType.Absolute
+      // Flex shrinking fits the flow axis without capping intrinsic scrollable size.
+      node.setFlexShrink(shrink)
+      if (options?.maxWidth === undefined) node.setMaxWidth(this.primaryAxis === "row" && flexible ? undefined : "100%")
+      if (options?.maxHeight === undefined) node.setMaxHeight(this.primaryAxis === "column" && flexible ? undefined : "100%")
+    }
   }
 
   get streaming(): boolean {

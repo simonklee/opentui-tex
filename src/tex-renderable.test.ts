@@ -1,4 +1,4 @@
-import { BoxRenderable, ImageRenderable, NativeImage, TextRenderable } from "@opentui/core"
+import { BoxRenderable, ImageRenderable, NativeImage, ScrollBoxRenderable, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { describe, expect, spyOn, test } from "bun:test"
 import { BindingTexRenderable } from "./binding-tex-renderable.js"
@@ -309,6 +309,192 @@ describe("TexRenderable", () => {
     } finally {
       render.mockRestore()
       renderer.destroy()
+    }
+  })
+
+  test.each([{}, { width: "auto", height: "auto" }] as const)("keeps auto-sized formulas scrollable with %j", async (options) => {
+    const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 20, height: 5 })
+    try {
+      const scroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%" })
+      const tex = new TexRenderable(renderer, {
+        formula: String.raw`\frac{1}{\frac{2}{\frac{3}{4}}}`,
+        foreground: "#ffffff",
+        background: "#000000",
+        ...options,
+        backend: new UnicodeTexBackend(),
+      })
+      renderer.root.add(scroll)
+      scroll.add(tex)
+      await tex.ready
+      await flush()
+      expect(tex.height).toBe(7)
+      expect(tex.getChildren()[0]!.height).toBe(7)
+      expect(scroll.viewport.height).toBe(5)
+      expect(scroll.scrollHeight).toBe(7)
+      expect(captureCharFrame()).not.toContain("4")
+
+      scroll.scrollTo(scroll.scrollHeight)
+      await flush()
+      expect(scroll.scrollTop).toBe(2)
+      expect(captureCharFrame()).toContain("4")
+
+      tex.formula = "x"
+      await tex.ready
+      await flush()
+      expect(tex.height).toBe(1)
+      expect(scroll.scrollHeight).toBe(5)
+      expect(scroll.scrollTop).toBe(0)
+      expect(captureCharFrame()).toContain("x")
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  test("keeps auto-sized images scrollable", async () => {
+    const { renderer, flush } = await createTestRenderer({ width: 20, height: 5 })
+    const rendered = imageOutput(255, 168, 336)
+    try {
+      const scroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%" })
+      const tex = new TexRenderable(renderer, {
+        formula: "x", foreground: "#ffffff", background: "#000000",
+        backend: { render: async () => rendered.output },
+      })
+      renderer.root.add(scroll)
+      scroll.add(tex)
+      await tex.ready
+      await flush()
+      const child = tex.getChildren()[0] as ImageRenderable
+      expect([tex.height, child.height, scroll.scrollHeight]).toEqual([7, 7, 7])
+      scroll.scrollTo(scroll.scrollHeight)
+      await flush()
+      expect(scroll.scrollTop).toBe(2)
+      expect(child.y + child.height).toBe(scroll.viewport.y + scroll.viewport.height)
+    } finally {
+      renderer.destroy()
+      takeProbe(rendered.probe)
+    }
+  })
+
+  test("keeps row-layout formulas horizontally scrollable", async () => {
+    const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 5, height: 6 })
+    try {
+      const scroll = new ScrollBoxRenderable(renderer, { width: "100%", height: "100%", scrollX: true })
+      const tex = new TexRenderable(renderer, {
+        formula: "abcdefghijklmnopqrstuvwxyz", flexDirection: "row",
+        foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+      })
+      renderer.root.add(scroll)
+      scroll.add(tex)
+      await tex.ready
+      await flush()
+      expect(tex.width).toBe(26)
+      expect(scroll.scrollWidth).toBe(26)
+      expect(captureCharFrame()).not.toContain("z")
+      scroll.scrollTo({ x: scroll.scrollWidth, y: 0 })
+      await flush()
+      expect(scroll.scrollLeft).toBe(21)
+      expect(captureCharFrame()).toContain("z")
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  test.each(["column", "row"] as const)("fits images within decorated maximum dimensions in %s layout", async (flexDirection) => {
+    const { renderer, flush } = await createTestRenderer({ width: 20, height: 15 })
+    const rendered = imageOutput(255, 168, 336)
+    try {
+      const tex = new TexRenderable(renderer, {
+        formula: "x", foreground: "#ffffff", background: "#000000",
+        border: true, padding: 1, maxWidth: 9, maxHeight: 7, flexDirection,
+        backend: { render: async () => rendered.output },
+      })
+      renderer.root.add(tex)
+      await tex.ready
+      const child = tex.getChildren()[0] as ImageRenderable
+      for (const alignItems of ["stretch", "center", "flex-end"] as const) {
+        tex.alignItems = alignItems
+        await flush()
+        expect([tex.width, tex.height]).toEqual([9, 7])
+        expect([child.width, child.height, child.x, child.y]).toEqual([5, 3, 2, 2])
+        expect(child.getFittedSize(child.width, child.height)).toEqual({ width: 3, height: 3 })
+      }
+      tex.flexDirection = flexDirection === "row" ? "column" : "row"
+      await flush()
+      expect([child.width, child.height, child.x, child.y]).toEqual([5, 3, 2, 2])
+    } finally {
+      renderer.destroy()
+      takeProbe(rendered.probe)
+    }
+  })
+
+  test.each([{}, { width: "auto", height: "auto" }] as const)("preserves image fitting and inherited alignment with %j", async (options) => {
+    const { renderer, flush } = await createTestRenderer({ width: 20, height: 8 })
+    const rendered = imageOutput(255, 80, 40)
+    try {
+      renderer.root.alignItems = "center"
+      const tex = new TexRenderable(renderer, {
+        formula: "x",
+        foreground: "#ffffff",
+        background: "#000000",
+        ...options,
+        maxWidth: "100%",
+        imageOptions: { alignSelf: "center" },
+        backend: { render: async () => rendered.output },
+      })
+      renderer.root.add(tex)
+      await tex.ready
+      const child = tex.getChildren()[0] as ImageRenderable
+      await child.loadPromise
+      await flush()
+      expect([tex.width, tex.height, tex.x]).toEqual([4, 1, 8])
+      expect([child.width, child.height, child.x]).toEqual([4, 1, 8])
+
+      tex.width = 8
+      tex.height = 2
+      await flush()
+      expect([tex.width, tex.height, tex.x]).toEqual([8, 2, 6])
+      expect([child.width, child.height, child.x]).toEqual([8, 2, 6])
+      expect(child.getFittedSize(child.width, child.height)).toEqual({ width: 8, height: 2 })
+
+      tex.width = "100%"
+      tex.height = "50%"
+      await flush()
+      expect([child.width, child.height, child.x]).toEqual([20, 4, 0])
+      expect(child.getFittedSize(child.width, child.height)).toEqual({ width: 16, height: 4 })
+
+      tex.width = "auto"
+      tex.height = "auto"
+      await flush()
+      expect([child.width, child.height, child.x]).toEqual([4, 1, 8])
+
+      renderer.resize(3, 8)
+      await flush()
+      expect([tex.width, child.width, child.x]).toEqual([3, 3, 0])
+    } finally {
+      renderer.destroy()
+      takeProbe(rendered.probe)
+    }
+  })
+
+  test.each(["column", "row"] as const)("keeps absolute image children fitted in %s layout", async (flexDirection) => {
+    const { renderer, flush } = await createTestRenderer({ width: 20, height: 8 })
+    const rendered = imageOutput(255, 168, 336)
+    try {
+      const tex = new TexRenderable(renderer, {
+        formula: "x", foreground: "#ffffff", background: "#000000",
+        minWidth: 3, maxWidth: 3, minHeight: 3, maxHeight: 3, flexDirection,
+        imageOptions: { position: "absolute" },
+        backend: { render: async () => rendered.output },
+      })
+      renderer.root.add(tex)
+      await tex.ready
+      await flush()
+      const child = tex.getChildren()[0] as ImageRenderable
+      expect([tex.width, tex.height, child.width, child.height]).toEqual([3, 3, 3, 3])
+      expect(child.getFittedSize(child.width, child.height)).toEqual({ width: 3, height: 3 })
+    } finally {
+      renderer.destroy()
+      takeProbe(rendered.probe)
     }
   })
 
