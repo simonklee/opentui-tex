@@ -16,11 +16,12 @@ Publish all ten packages locally with an interactive npm login and two-factor
 authentication first. Do not create an `NPM_TOKEN` secret.
 
 1. Commit and push the release changes to `main`.
-2. Create and push the matching `v0.2.0` tag. Do not publish the GitHub release yet.
-3. Run `Release` manually with `tag` set to `v0.2.0` and `dry-run` enabled.
-4. After the run succeeds, download its `npm-packages` artifact into a clean
+2. Run `Release` manually on `main` with `dry-run` enabled and `tag` empty.
+3. After the run succeeds, download its `npm-packages` artifact into a clean
    `release/` directory. Keep only the ten tarballs from that run.
-5. From the repository root at the tagged commit, run:
+4. At the commit tested by that run, create the matching local `v0.2.0` tag.
+   Do not push it until trusted publishing is configured: tag pushes publish.
+5. From the repository root at that commit, run:
 
 ```sh
 npm login
@@ -64,6 +65,8 @@ tags named `v*`. You can also require approval before publication. Only the
 publish job uses this environment and receives `id-token: write`; build and
 dry-run jobs need neither. No npm token secret is needed.
 
+Complete this setup before pushing a release tag or using `bun run release`.
+
 Later releases use OIDC authentication and receive npm provenance automatically
 from this public repository. After a successful trusted release, select
 **Require two-factor authentication and disallow tokens** in each package's
@@ -100,17 +103,40 @@ Version 0.2.0 is the first single-install release. It replaces the separate
 native JavaScript package from the 0.1.0 GitHub release. Keep the existing 0.1.0
 tags and tarballs unchanged.
 
-For later versions, update the root version and all native dependency versions
-together:
+For later versions, commit the changes you want to release on `main`, then run:
 
 ```sh
-npm version 0.2.1 --no-git-tag-version
+bun run release
 ```
 
-The `version` script also updates `bun.lock`. Commit the version change and the
-release code, then create and push the matching `v<version>` tag. Publish a
-GitHub release for that tag to run the workflow. The tag must match
-`package.json` exactly.
+The default bump is `patch`. You can select `minor` or `major`, or preview the
+release without changing files, commits, or tags:
+
+```sh
+bun run release minor
+bun run release major
+bun run release --dry-run
+```
+
+The command requires Git push access, an authenticated GitHub CLI
+(`gh auth login`), and the trusted publishing setup above. It requires clean `package.json`
+and `bun.lock` files and no unfinished merge, rebase, cherry-pick, or revert.
+It rejects a branch behind or diverged from the remote, existing version tags,
+and multiple `origin` push URLs. Only stable `major.minor.patch` versions are
+supported. A dry run performs these checks and fetches remote history, but does
+not build, commit, push, or publish.
+
+The command updates the root version, all eight native dependency versions, and
+`bun.lock` through the existing `version` script. It commits only `package.json`
+and `bun.lock`, creates an annotated `v<version>` tag, and atomically pushes
+`main` and that tag. Unrelated staged, unstaged, and untracked changes stay
+untouched and are not included in the release commit.
+
+The tag push starts `release.yml`, which builds, tests, and publishes the npm
+packages. The command waits for the publish job to succeed, downloads its ten
+tarballs, and creates the GitHub release with those files and generated notes.
+Creating the GitHub release does not trigger a second build. Later releases need
+no local npm login or token.
 
 You can also run `Release` manually. Leave `dry-run` enabled to validate a branch
 or tag without publishing. To publish manually, supply the existing release tag
@@ -123,6 +149,20 @@ last. Stable versions use the npm `latest` tag; prereleases use `next`.
 Publication is not atomic. If publication stops partway through, rerun the failed
 publish job to reuse the tarballs from the successful build job. The publisher
 checks npm before skipping an already-published version.
+
+If the push fails, the local release commit and tag remain intact. Resolve the
+Git error and push that commit and tag instead of starting another version bump.
+If npm publication succeeds but downloading the artifacts or creating the GitHub
+release fails, use the successful run and existing tag to finish manually:
+
+```sh
+gh run download <run-id> --name npm-packages --dir <empty-directory>
+gh release create v<version> <empty-directory>/*.tgz \
+  --verify-tag --generate-notes --title v<version>
+```
+
+Replace the placeholders with the run ID, version, and a new empty directory.
+Do not rerun `bun run release` to retry a partial release.
 
 Do not use plain `npm publish` from the repository root for a release: that
 would omit the native packages. The coordinated command is

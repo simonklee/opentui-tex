@@ -17,5 +17,5 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["bun", "node"]
   },
-  "include": ["src/**/*.ts", "demo/**/*.ts"]
+  "include": ["src/**/*.ts", "demo/**/*.ts", "scripts/release.ts", "scripts/release.test.ts"]
 }
