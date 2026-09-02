@@ -96,9 +96,14 @@ Options beyond `BoxOptions`:
 - `imageOptions`: options for the installed `ImageRenderable`.
 - `onError`: receives backend errors.
 
-When you assign `formula.formula`, `TexRenderable` installs a synchronous
-Unicode preview. It then starts a request for the selected backend. A native
-result replaces the preview with an image in the same `TexRenderable`.
+Automatic width and height include borders and padding. Explicit dimensions
+set the outer box size. Unicode output clips to the available cells without
+wrapping mathematical rows.
+
+When you assign `formula.formula`, `TexRenderable` installs synchronous Unicode
+output. With the built-in Unicode backend, this is the final result. Other
+backends run next; a native result replaces the preview with an image in the
+same `TexRenderable`.
 
 `formula.whenReady()` tracks replacement requests. It resolves after
 `TexRenderable` installs the latest result. `formula.ready` exposes the

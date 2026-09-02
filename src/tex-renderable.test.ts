@@ -1,8 +1,10 @@
-import { ImageRenderable, NativeImage, TextRenderable } from "@opentui/core"
+import { BoxRenderable, ImageRenderable, NativeImage, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { describe, expect, spyOn, test } from "bun:test"
 import { BindingTexRenderable } from "./binding-tex-renderable.js"
+import { graphemeSegmenter } from "./math-graphemes.js"
 import { fitImageToPlacement, TexRenderable, type TexBackend, type TexRenderableOptions } from "./tex-renderable.js"
+import { UnicodeTexBackend } from "./unicode-tex-backend.js"
 
 function imageOutput(red: number, width = 1, height = 1): { output: Awaited<ReturnType<TexBackend["render"]>>; probe: NativeImage } {
   const data = new Uint8Array(width * height * 4).fill(255)
@@ -27,6 +29,289 @@ describe("fitImageToPlacement", () => {
 })
 
 describe("TexRenderable", () => {
+  test("preserves math rows under explicit and responsive width constraints", async () => {
+    for (const sizing of [{ width: 5 }, { maxWidth: "100%" as const }]) {
+      const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 20, height: 6 })
+      try {
+        const tex = new TexRenderable(renderer, {
+          formula: String.raw`\frac{123456789}{987654321}`,
+          foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+          ...sizing,
+        })
+        renderer.root.add(tex)
+        await tex.whenReady()
+        await flush()
+        renderer.resize(5, 6)
+        await flush()
+        expect(captureCharFrame().split("\n").slice(0, 3).map((line) => line.trimEnd())).toEqual([" 1234", "─────", " 9876"])
+        expect(tex.width).toBe(5)
+        expect(tex.height).toBe(3)
+      } finally {
+        renderer.destroy()
+      }
+    }
+  })
+
+  test("includes decorations in intrinsic sizes and preserves explicit outer dimensions", async () => {
+    const cases: Array<[Partial<TexRenderableOptions>, number, number]> = [
+      [{ border: true }, 7, 5],
+      [{ padding: 1 }, 7, 5],
+      [{ border: true, padding: 1 }, 9, 7],
+      [{ border: ["left", "bottom"], paddingX: 1, paddingY: 1 }, 8, 6],
+      [{ border: true, width: 7, height: 5 }, 7, 5],
+      [{ border: true, width: 7, height: "auto" }, 7, 5],
+    ]
+    for (const [options, width, height] of cases) {
+      const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 30, height: 20 })
+      try {
+        const tex = new TexRenderable(renderer, {
+          formula: String.raw`\frac{123}{456}`,
+          foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+          ...options,
+        })
+        renderer.root.add(tex)
+        await tex.whenReady()
+        await flush()
+        expect([tex.width, tex.height]).toEqual([width, height])
+        expect([tex.getChildren()[0]!.width, tex.getChildren()[0]!.height]).toEqual([5, 3])
+        expect(captureCharFrame()).toContain("123")
+        expect(captureCharFrame()).toContain("456")
+      } finally {
+        renderer.destroy()
+      }
+    }
+  })
+
+  test("updates decorated sizing through prop changes, auto resets, and empty output", async () => {
+    const { renderer, flush } = await createTestRenderer({ width: 30, height: 20 })
+    try {
+      const tex = new TexRenderable(renderer, {
+        formula: String.raw`\frac{123}{456}`, width: "auto", height: "auto",
+        foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+      })
+      renderer.root.add(tex)
+      tex.padding = 2
+      tex.border = true
+      await tex.whenReady()
+      await flush()
+      expect([tex.width, tex.height]).toEqual([11, 9])
+      tex.width = 13
+      tex.height = 11
+      await flush()
+      expect([tex.width, tex.height]).toEqual([13, 11])
+      expect([tex.getChildren()[0]!.width, tex.getChildren()[0]!.height]).toEqual([7, 5])
+      tex.formula = "x^2"
+      Reflect.set(tex, "width", null)
+      tex.height = "auto"
+      await tex.whenReady()
+      await flush()
+      expect([tex.width, tex.height]).toEqual([8, 7])
+      tex.formula = ""
+      await tex.whenReady()
+      await flush()
+      expect(tex.getChildren()).toHaveLength(0)
+      expect([tex.width, tex.height]).toEqual([7, 7])
+      tex.formula = "y"
+      await tex.whenReady()
+      await flush()
+      expect([tex.width, tex.height]).toEqual([7, 7])
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  test("resolves percentage padding and inherited alignment before layout", async () => {
+    const { renderer, flush } = await createTestRenderer({ width: 30, height: 30 })
+    try {
+      const parent = new BoxRenderable(renderer, { width: "100%", height: "100%", alignItems: "center" })
+      const tex = new TexRenderable(renderer, {
+        formula: String.raw`\frac{123}{456}`, border: true, padding: "10%",
+        foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+      })
+      parent.add(tex)
+      renderer.root.add(parent)
+      await tex.whenReady()
+      await flush()
+      expect([tex.width, tex.height]).toEqual([13, 11])
+      expect(tex.x).toBeGreaterThan(0)
+      parent.alignItems = "stretch"
+      renderer.resize(40, 30)
+      await flush()
+      expect([tex.width, tex.height]).toEqual([15, 13])
+      expect(tex.x).toBe(0)
+      tex.alignSelf = "flex-end"
+      await flush()
+      expect(tex.x).toBe(25)
+      Reflect.set(tex, "alignSelf", null)
+      parent.flexDirection = "row"
+      await flush()
+      expect([tex.width, tex.height]).toEqual([15, 13])
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  test("renders the built-in Unicode backend once per update without replacing its preview", async () => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 6 })
+    const segment = spyOn(graphemeSegmenter, "segment")
+    try {
+      const backend = new UnicodeTexBackend()
+      backend.renderSync({ formula: "x^2", display: false, foreground: "#ffffff", background: "#000000", widthMax: 80, heightMax: 24, signal: new AbortController().signal })
+      const callsPerRender = segment.mock.calls.length
+      segment.mockClear()
+      const tex = new TexRenderable(renderer, {
+        formula: "x^2",
+        foreground: "#ffffff", background: "#000000", backend,
+      })
+      renderer.root.add(tex)
+      const child = tex.getChildren()[0]
+      await tex.whenReady()
+      expect(segment).toHaveBeenCalledTimes(callsPerRender)
+      expect(tex.getChildren()[0]).toBe(child)
+      tex.formula = "y^2"
+      await tex.whenReady()
+      expect(segment).toHaveBeenCalledTimes(callsPerRender * 2)
+    } finally {
+      segment.mockRestore()
+      renderer.destroy()
+    }
+  })
+
+  test("still calls customized Unicode backends and retains the default preview on failure", async () => {
+    class CustomBackend extends UnicodeTexBackend {
+      override async render(): Promise<never> { throw new Error("custom backend") }
+    }
+    class CustomSyncBackend extends UnicodeTexBackend {
+      override renderSync(): never { throw new Error("custom sync backend") }
+    }
+    for (const backend of [new CustomBackend(), new CustomSyncBackend()]) {
+      const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 10, height: 3 })
+      try {
+        const errors: unknown[] = []
+        const tex = new TexRenderable(renderer, {
+          formula: "x^2", foreground: "#ffffff", background: "#000000", backend,
+          fallback: "unicode", onError: (error) => errors.push(error),
+        })
+        renderer.root.add(tex)
+        await tex.whenReady()
+        await flush()
+        expect(errors).toHaveLength(1)
+        expect(captureCharFrame()).toContain("x²")
+      } finally {
+        renderer.destroy()
+      }
+    }
+  })
+
+  test("sizes image output inside decorated intrinsic boxes", async () => {
+    const { renderer, flush } = await createTestRenderer({ width: 20, height: 8 })
+    const rendered = imageOutput(255, 80, 40)
+    try {
+      const tex = new TexRenderable(renderer, {
+        formula: "x", border: true, padding: 1,
+        foreground: "#ffffff", background: "#000000",
+        backend: { render: async () => rendered.output },
+      })
+      renderer.root.add(tex)
+      await tex.whenReady()
+      await flush()
+      const child = tex.getChildren()[0] as ImageRenderable
+      expect([tex.width, tex.height]).toEqual([8, 5])
+      expect([child.width, child.height]).toEqual([4, 1])
+      expect(child.image!.width).toBe(80)
+    } finally {
+      renderer.destroy()
+      takeProbe(rendered.probe)
+    }
+  })
+
+  test("percentage-sized formulas still shrink to leave room for siblings", async () => {
+    for (const flexDirection of ["column", "row"] as const) {
+      const { renderer, flush } = await createTestRenderer({ width: 20, height: 5 })
+      try {
+        const parent = new BoxRenderable(renderer, { width: "100%", height: "100%", flexDirection })
+        const tex = new TexRenderable(renderer, {
+          formula: "x", width: "100%", height: "100%",
+          foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+        })
+        const sibling = new TextRenderable(renderer, { content: "end", width: 3, height: 1 })
+        parent.add(tex)
+        parent.add(sibling)
+        renderer.root.add(parent)
+        await tex.whenReady()
+        await flush()
+        expect(flexDirection === "column" ? sibling.y : sibling.x).toBe(flexDirection === "column" ? 4 : 17)
+      } finally {
+        renderer.destroy()
+      }
+    }
+  })
+
+  test("undefined shrink props keep intrinsic sizing while explicit shrink is honored", async () => {
+    for (const flexShrink of [undefined, 1]) {
+      const { renderer, flush } = await createTestRenderer({ width: 20, height: 3 })
+      try {
+        const tex = new TexRenderable(renderer, {
+          formula: String.raw`\frac{1}{2}`, flexShrink,
+          foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+        })
+        renderer.root.add(tex)
+        renderer.root.add(new TextRenderable(renderer, { content: "footer", height: 1 }))
+        await tex.whenReady()
+        await flush()
+        expect(tex.height).toBe(flexShrink === undefined ? 3 : 2)
+      } finally {
+        renderer.destroy()
+      }
+    }
+  })
+
+  test("defers Unicode errors and follows replacements started by observers", async () => {
+    const { renderer } = await createTestRenderer({ width: 20, height: 5 })
+    try {
+      const errors: unknown[] = []
+      const tex = new TexRenderable(renderer, {
+        formula: "x}", foreground: "#ffffff", background: "#000000",
+        backend: new UnicodeTexBackend(), fallback: "throw",
+        onError: (error) => { errors.push(error); tex.formula = "y" },
+      })
+      renderer.root.add(tex)
+      await tex.whenReady()
+      expect(tex.formula).toBe("y")
+      expect(errors).toHaveLength(1)
+      tex.formula = "x}"
+      await tex.whenReady()
+      expect(tex.formula).toBe("y")
+      expect(errors).toHaveLength(2)
+      tex.formula = "x}"
+      const superseded = tex.ready
+      tex.formula = "z"
+      await Promise.all([superseded, tex.whenReady()])
+      expect(tex.formula).toBe("z")
+      expect(errors).toHaveLength(2)
+    } finally {
+      renderer.destroy()
+    }
+  })
+
+  test("honors prototype-level Unicode backend customization", async () => {
+    const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 20, height: 5 })
+    const render = spyOn(UnicodeTexBackend.prototype, "render").mockResolvedValue({ kind: "unicode", text: "custom", columns: 6, rows: 1 })
+    try {
+      const tex = new TexRenderable(renderer, {
+        formula: "x", foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+      })
+      renderer.root.add(tex)
+      await tex.whenReady()
+      await flush()
+      expect(render).toHaveBeenCalledTimes(1)
+      expect(captureCharFrame()).toContain("custom")
+    } finally {
+      render.mockRestore()
+      renderer.destroy()
+    }
+  })
+
   test("binding updates apply streaming before formula regardless of prop order", async () => {
     const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 20, height: 4 })
     const requests: Array<{ formula: string; foreground: string; display: boolean }> = []

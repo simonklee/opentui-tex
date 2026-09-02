@@ -1,5 +1,6 @@
 import type { MathEnvironment, MathNode, SymbolRole } from "./math-types.js"
 import { accents, delimiters, namedOperators, operators, spacing, symbols } from "./math-symbols.js"
+import { graphemeSegmenter } from "./math-graphemes.js"
 
 export const MAX_NESTING_DEPTH = 256
 
@@ -19,8 +20,11 @@ export function parseMathIncomplete(source: string): MathNode {
 class Parser {
   private offset = 0
   private depth = 0
+  private readonly graphemes: Intl.Segments
 
-  constructor(private readonly source: string, private readonly incomplete = false) {}
+  constructor(private readonly source: string, private readonly incomplete = false) {
+    this.graphemes = graphemeSegmenter.segment(source)
+  }
 
   parse(): MathNode {
     const result = row(this.parseRow())
@@ -44,28 +48,37 @@ class Parser {
         else scripts.subscript = argument
         body.push(scripts)
       } else {
-        body.push(this.parseAtom())
+        const atom = this.parseAtom(body.at(-1))
+        if (atom) body.push(atom)
       }
     }
     return body
   }
 
-  private parseAtom(): MathNode {
+  private parseAtom(previous?: MathNode): MathNode | undefined {
     this.depth++
     if (this.depth > MAX_NESTING_DEPTH) this.fail(`TeX nesting exceeds the ${MAX_NESTING_DEPTH}-level limit`)
     try {
       if (this.peek() === "{") return this.parseGroup()
-      if (this.peek() === "\\") return this.parseCommand()
+      if (this.peek() === "\\") {
+        const atom = this.parseCommand(previous)
+        if (atom && "value" in atom) atom.value += this.readCombiningSuffix()
+        return atom
+      }
       if (this.peek() === "~") { this.offset++; return { type: "space", width: 1 } }
-      const value = [...this.source.slice(this.offset)][0] ?? ""
+      const part = this.graphemes.containing(this.offset)!
+      // Unicode prepend characters must not absorb TeX control tokens.
+      const literal = part.segment.slice(this.offset - part.index)
+      const boundary = literal.search(/[\\{}[\]^_~&\s]/u)
+      const value = boundary > 0 ? literal.slice(0, boundary) : literal
       this.offset += value.length
-      return { type: "symbol", value, role: inferRole(value) }
+      return { type: "symbol", value, role: inferRole(value[0]!) }
     } finally {
       this.depth--
     }
   }
 
-  private parseCommand(): MathNode {
+  private parseCommand(previous?: MathNode): MathNode | undefined {
     const start = this.offset
     const command = this.readCommand()
     if (command === "\\") return row([])
@@ -103,13 +116,18 @@ class Parser {
       if (target.type === "symbol") return { ...target, value: negate(target.value) }
       return { type: "row", body: [{ type: "symbol", value: "¬" }, target] }
     }
-    if (["limits", "nolimits", "displaystyle", "textstyle", "scriptstyle"].includes(command)) return row([])
+    if (command === "limits" || command === "nolimits") {
+      const base = previous?.type === "scripts" ? previous.base : previous
+      if (base?.type === "operator") base.limits = command === "limits"
+      return undefined
+    }
+    if (["displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle"].includes(command)) return undefined
     if (/^(?:big|Big|bigg|Bigg)[lrm]?$/.test(command)) return { type: "symbol", value: this.readDelimiter() }
     if (command in spacing) return { type: "space", width: spacing[command]! }
     if (command in symbols) return { type: "symbol", ...symbols[command]! }
-    if (command in operators) return { type: "operator", value: operators[command]!, limits: !command.includes("int") }
-    if (namedOperators.has(command)) return { type: "operator", value: command, limits: ["lim", "min", "max"].includes(command) }
-    if (command in delimiters) return { type: "symbol", value: delimiters[command]! }
+    if (command in operators) return { type: "operator", value: operators[command]!, limits: command.includes("int") ? false : "display" }
+    if (namedOperators.has(command)) return { type: "operator", value: command, limits: ["lim", "min", "max"].includes(command) ? "display" : false }
+    if (command in delimiters) return { type: "symbol", value: delimiters[`\\${command}`] ?? delimiters[command]! }
     if (["{", "}", "%", "#", "$", "&", "_", "backslash"].includes(command)) return { type: "symbol", value: command === "backslash" ? "\\" : command }
     return { type: "text", value: `\\${command}` }
   }
@@ -164,13 +182,16 @@ class Parser {
   }
 
   private parseArgument(): MathNode {
-    this.skipWhitespace()
-    if (this.done()) {
-      if (this.incomplete) return placeholder()
-      this.fail("Expected a TeX argument")
+    while (true) {
+      this.skipWhitespace()
+      if (this.done()) {
+        if (this.incomplete) return placeholder()
+        this.fail("Expected a TeX argument")
+      }
+      if (this.peek() === "}") this.fail("Unexpected closing TeX group")
+      const argument = this.peek() === "{" ? this.parseGroup() : this.parseAtom()
+      if (argument) return argument
     }
-    if (this.peek() === "}") this.fail("Unexpected closing TeX group")
-    return this.peek() === "{" ? this.parseGroup() : this.parseAtom()
   }
 
   private parseGroup(): MathNode {
@@ -231,8 +252,20 @@ class Parser {
       this.fail("Expected a TeX delimiter")
     }
     if (this.peek() === "}") this.fail("Unexpected closing TeX group")
-    const token = this.peek() === "\\" ? this.readCommand() : this.source[this.offset++] ?? ""
-    return delimiters[token] ?? delimiters[`\\${token}`] ?? token
+    if (this.peek() === "\\") {
+      const command = this.readCommand()
+      return (delimiters[`\\${command}`] ?? delimiters[command] ?? command) + this.readCombiningSuffix()
+    }
+    const token = this.source[this.offset++] ?? ""
+    return (delimiters[token] ?? token) + this.readCombiningSuffix()
+  }
+
+  private readCombiningSuffix(): string {
+    if (this.done()) return ""
+    const part = this.graphemes.containing(this.offset)!
+    const suffix = part.segment.slice(this.offset - part.index).match(/^\p{Mark}+/u)?.[0] ?? ""
+    this.offset += suffix.length
+    return suffix
   }
 
   private skipOptionalRowSpacing(): void {

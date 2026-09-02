@@ -17,7 +17,7 @@ export type MathNode =
   | { type: "delimited"; left: string; body: MathNode; right: string }
   | { type: "matrix"; rows: MathNode[][]; environment: MathEnvironment }
   | { type: "accent"; accent: AccentKind; body: MathNode }
-  | { type: "operator"; value: string; limits: boolean }
+  | { type: "operator"; value: string; limits: boolean | "display" }
   | { type: "overunder"; base: MathNode; over?: MathNode; under?: MathNode }
 
 export interface MathBox {

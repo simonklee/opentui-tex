@@ -1,5 +1,6 @@
 import type { MathBox, MathEnvironment, MathNode, SymbolRole } from "./math-types.js"
 import stringWidth from "string-width"
+import { graphemeSegmenter } from "./math-graphemes.js"
 
 const CELL_LIMIT = 16384
 const superscript: Readonly<Record<string, string>> = {
@@ -23,8 +24,8 @@ export function boxToString(box: MathBox, widthMax: number, heightMax: number): 
     let width = 0
     for (let x = 0; x < box.width && width < widthMax; x++) {
       const value = box.cells[y]![x]
-      if (!value) { line += " "; width++; continue }
-      const cellWidth = stringWidth(value)
+      const cellWidth = value ? stringWidth(value) : 0
+      if (cellWidth === 0) { line += " "; width++; continue }
       if (cellWidth > widthMax) throw new Error(`Unicode glyph exceeds the ${widthMax}-column TeX width`)
       if (width + cellWidth > widthMax) break
       line += value
@@ -75,9 +76,10 @@ function fraction(top: MathBox, bottom: MathBox, bar: boolean): MathBox {
 function root(body: MathBox, index?: MathBox): MathBox {
   const indexWidth = index ? Math.max(0, index.width - 1) : 0
   const bodyX = indexWidth + 2
-  const result = blank(bodyX + body.width, body.height + 1, body.baseline + 1)
-  set(result, bodyX - 1, 0, "╭"); for (let x = bodyX; x < result.width; x++) set(result, x, 0, "─")
-  set(result, bodyX - 2, result.baseline, "√"); overlay(result, body, bodyX, 1)
+  const bodyY = index?.height ?? 1
+  const result = blank(bodyX + body.width, body.height + bodyY, body.baseline + bodyY)
+  set(result, bodyX - 1, bodyY - 1, "╭"); for (let x = bodyX; x < result.width; x++) set(result, x, bodyY - 1, "─")
+  set(result, bodyX - 2, result.baseline, "√"); overlay(result, body, bodyX, bodyY)
   if (index) overlay(result, index, 0, 0)
   return result
 }
@@ -86,7 +88,7 @@ function scripts(node: Extract<MathNode, { type: "scripts" }>, display: boolean)
   const base = layout(node.base, display)
   const supText = node.superscript ? simpleText(node.superscript) : undefined
   const subText = node.subscript ? simpleText(node.subscript) : undefined
-  const limits = node.base.type === "operator" && node.base.limits && display
+  const limits = node.base.type === "operator" && (node.base.limits === true || (node.base.limits === "display" && display))
   if (!limits) {
     const mappedSup = supText === undefined ? undefined : mapScript(supText, superscript)
     const mappedSub = subText === undefined ? undefined : mapScript(subText, subscript)
@@ -159,12 +161,15 @@ function accent(kind: Extract<MathNode, { type: "accent" }>["accent"], body: Mat
 }
 
 function delimiter(value: string, height: number, baseline: number, left: boolean): MathBox {
-  if (!value) return blank(0, height, baseline)
+  const base = value.replace(/\p{Mark}+$/u, "")
+  if (!base) return blank(0, height, baseline)
   if (height === 1) return textBox(value)
-  const glyphs = delimiterGlyphs(value, left)
-  const result = blank(Math.max(...glyphs.map((glyph) => stringWidth(glyph))), height, baseline)
+  const glyphs = delimiterGlyphs(base, left)
+  const suffix = value.slice(base.length)
+  const result = blank(Math.max(...glyphs.map((glyph) => stringWidth(glyph + suffix))), height, baseline)
   for (let y = 0; y < height; y++) set(result, 0, y, y === 0 ? glyphs[0] : y === height - 1 ? glyphs[2] : glyphs[1])
-  if ((value === "{" || value === "}") && height >= 3) set(result, 0, Math.floor(height / 2), left ? "⎨" : "⎬")
+  if ((base === "{" || base === "}") && height >= 3) set(result, 0, Math.floor(height / 2), left ? "⎨" : "⎬")
+  if (suffix) set(result, 0, baseline, result.cells[baseline]![0]! + suffix)
   return result
 }
 
@@ -187,7 +192,7 @@ function matrixDelimiters(value: MathEnvironment): [string, string] | undefined 
 }
 
 function textBox(text: string): MathBox {
-  const parts = typeof Intl.Segmenter === "function" ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map((part) => part.segment) : [...text]
+  const parts = Array.from(graphemeSegmenter.segment(text), (part) => part.segment)
   const result = blank(parts.reduce((sum, part) => sum + stringWidth(part), 0), 1, 0)
   let x = 0
   for (const part of parts) { set(result, x, 0, part); x += stringWidth(part) }

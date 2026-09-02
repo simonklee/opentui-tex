@@ -1,21 +1,94 @@
-diff --git a/src/svg.zig b/src/svg.zig
---- a/src/svg.zig
-+++ b/src/svg.zig
-@@ -45,6 +45,7 @@ pub const Svg = struct {
-                 try self.path.append(allocator, ' ');
-             }
--            var path_writer = self.path.writer(allocator).adaptToNewApi(&.{});
--            try path_writer.new_interface.print(fmt, args);
-+            var path_writer = std.Io.Writer.Allocating.fromArrayList(allocator, &self.path);
-+            defer self.path = path_writer.toArrayList();
-+            try path_writer.writer.print(fmt, args);
-         }
-     };
-diff --git a/src/root.zig b/src/root.zig
+--- a/build.zig.zon
++++ b/build.zig.zon
+@@ -4,8 +4,7 @@
+     .version = "0.1.0",
+     .dependencies = .{
+         .microtex = .{
+-            .url = "https://github.com/fjebaker/MicroTeX/archive/openmath.tar.gz",
+-            .hash = "N-V-__8AADt0yQCpAsFGWBTOCyfdUkjnlLJF_V-FBo08cjK0",
++            .path = "../microtex",
+         },
+     },
+     .paths = .{
 --- a/src/root.zig
 +++ b/src/root.zig
-@@ -112,14 +112,13 @@ pub const TexSvgRender = struct {
-                 },
+@@ -9,7 +9,7 @@
+         font_data: []const u8 = DEFAULT_FONT,
+     };
+ 
+-    context: microtex.FontContext,
++    context: *microtex.FontContext,
+     mtex: microtex.MicroTeX,
+ 
+     pub fn init(
+@@ -17,13 +17,15 @@
+         opts: Options,
+     ) !TexSvgRender {
+         microtex.setRenderGlyphUsePath(true);
+-        var context = microtex.FontContext.init(allocator);
+-        errdefer context.deinit();
++        // MicroTeX retains this address in its C callbacks.
++        const context = try allocator.create(microtex.FontContext);
++        errdefer allocator.destroy(context);
++        context.* = .{};
+ 
+         const mtex = try microtex.MicroTeX.init(
+             allocator,
+             opts.font_data,
+-            &context,
++            context,
+         );
+         errdefer mtex.deinit();
+         return .{
+@@ -33,8 +35,9 @@
+     }
+ 
+     pub fn deinit(self: *TexSvgRender) void {
++        const allocator = self.mtex.allocator;
+         self.mtex.deinit();
+-        self.context.deinit();
++        allocator.destroy(self.context);
+         self.* = undefined;
+     }
+ 
+@@ -62,23 +65,25 @@
+         const style: u32 = b: {
+             if (opts.style) |s| {
+                 break :b switch (s) {
+-                    .display => 1,
+-                    .in_line => 0,
++                    .display => 0,
++                    .in_line => 2,
+                 };
+             }
+             break :b 0;
+         };
+ 
++        self.context.unsupported_text = false;
+         var r = try self.mtex.parseRender(null_term, .{
+             .text_size = @floatFromInt(opts.size),
+             .line_space = @floatFromInt(opts.spacing),
+-            .override_syle = opts.style == null,
++            .override_syle = opts.style != null,
+             .style = style,
+             .color = 0,
+         });
+         defer r.deinit();
++        if (self.context.unsupported_text) return error.UnsupportedGlyph;
+ 
+-        var data = r.getDrawingData(opts.x_pad, opts.y_pad);
++        var data = try r.getDrawingData(opts.x_pad, opts.y_pad);
+ 
+         var s = svg.Svg.init(allocator);
+         defer s.deinit();
+@@ -107,19 +112,16 @@
+                 .fill_path => try s.fillPath(),
+                 .draw_line => |i| try s.drawLine(i.x1, i.y1, i.x2, i.y2),
+                 .set_stroke => |i| try s.setStroke(i.width),
+-                else => {
+-                    std.log.default.warn("Unhandled opcopde: {any}", .{cmd});
+-                },
++                else => return error.UnsupportedDrawingCommand,
              }
          }
 -        var buf = std.ArrayList(u8).empty;
@@ -33,3 +106,123 @@ diff --git a/src/root.zig b/src/root.zig
 +        return buf_writer.toOwnedSlice();
      }
  };
+--- a/src/svg.zig
++++ b/src/svg.zig
+@@ -45,8 +45,9 @@
+             if (self.path.items.len > 0) {
+                 try self.path.append(allocator, ' ');
+             }
+-            var path_writer = self.path.writer(allocator).adaptToNewApi(&.{});
+-            try path_writer.new_interface.print(fmt, args);
++            var path_writer = std.Io.Writer.Allocating.fromArrayList(allocator, &self.path);
++            defer self.path = path_writer.toArrayList();
++            try path_writer.writer.print(fmt, args);
+         }
+     };
+ 
+--- a/src/tex.zig
++++ b/src/tex.zig
+@@ -111,7 +111,7 @@
+         );
+ 
+         const content = try allocator.dupe(u8, clm_data);
+-        const font_meta = c.microtex_init(content.len, content.ptr);
++        const font_meta = c.microtex_init(@intCast(content.len), content.ptr);
+ 
+         const name = c.microtex_getFontName(font_meta);
+         c.microtex_setDefaultMainFont(name);
+@@ -125,6 +125,7 @@
+     }
+ 
+     pub fn deinit(self: *Self) void {
++        c.microtex_releaseFontMeta(self.font_meta);
+         c.microtex_release();
+         self.allocator.free(self.clm_data);
+         self.* = undefined;
+@@ -309,13 +310,14 @@
+         self.* = undefined;
+     }
+ 
+-    pub fn getDrawingData(self: *Render, x: u32, y: u32) DrawingData {
++    pub fn getDrawingData(self: *Render, x: u32, y: u32) !DrawingData {
+         return self.drawing_data orelse {
+             const ptr = c.microtex_getDrawingData(
+                 self.ptr,
+                 @intCast(x),
+                 @intCast(y),
+             );
++            if (ptr == null) return error.FailedToRender;
+             self.drawing_data = DrawingData.init(ptr);
+             return self.drawing_data.?;
+         };
+@@ -323,25 +325,18 @@
+ };
+ 
+ pub const FontContext = struct {
+-    const FontText = struct {
+-        font: FontDescription,
+-        text: []const u8,
+-    };
+-    const FontMap = std.AutoHashMap(usize, FontText);
+-
+-    id: usize = 0,
+-    fontmap: FontMap,
++    unsupported_text: bool = false,
+ 
+     fn createTextLayout(
+         self: *FontContext,
+         text: []const u8,
+         font: FontDescription,
+     ) !usize {
+-        const id = self.id;
+-        self.id += 1;
+-
+-        try self.fontmap.put(id, .{ .text = text, .font = font });
+-        return id;
++        _ = text;
++        _ = font;
++        // SVG output only supports glyph paths, not platform text layouts.
++        self.unsupported_text = true;
++        return 0;
+     }
+ 
+     fn getTextLayoutBounds(
+@@ -349,16 +344,14 @@
+         id: usize,
+         bounds: TextLayoutBounds,
+     ) !void {
+-        const value = self.fontmap.get(id).?;
+-        _ = value;
+-        // TODO: would need a way of measuring how big this is going to be
+-        bounds.setBounds(200, 100, 10);
++        _ = self;
++        _ = id;
++        bounds.setBounds(0, 0, 0);
+     }
+ 
+     fn releaseTextLayout(self: *FontContext, id: usize) void {
+-        if (!self.fontmap.remove(id)) {
+-            std.log.default.debug("Failed to remove text layout: {d}", .{id});
+-        }
++        _ = self;
++        _ = id;
+     }
+ 
+     fn isPathExists(self: *FontContext, id: usize) bool {
+@@ -366,16 +359,6 @@
+         _ = id;
+         return false;
+     }
+-
+-    pub fn init(allocator: std.mem.Allocator) FontContext {
+-        const map = FontMap.init(allocator);
+-        return .{ .fontmap = map };
+-    }
+-
+-    pub fn deinit(self: *FontContext) void {
+-        self.fontmap.deinit();
+-        self.* = undefined;
+-    }
+ };
+ 
+ pub fn setRenderGlyphUsePath(use: bool) void {
