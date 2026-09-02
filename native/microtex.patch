@@ -1,0 +1,825 @@
+--- a/build.zig
++++ b/build.zig
+@@ -27,7 +27,7 @@
+     );
+ 
+     const install_config = b.addInstallFileWithDir(
+-        conf_header.getOutput(),
++        conf_header.getOutputFile(),
+         .header,
+         "microtexconfig.h",
+     );
+@@ -38,18 +38,19 @@
+         .root_module = b.createModule(.{
+             .target = target,
+             .optimize = optimize,
++            .pic = true,
+         }),
+     });
+ 
+     // also install the configuration header into the include directory
+     lib.step.dependOn(&install_config.step);
+ 
+-    lib.linkLibCpp();
+-    lib.addConfigHeader(conf_header);
++    lib.root_module.link_libcpp = true;
++    lib.root_module.addConfigHeader(conf_header);
+ 
+-    lib.addIncludePath(b.path("lib"));
++    lib.root_module.addIncludePath(b.path("lib"));
+     lib.root_module.addCMacro("GLYPH_RENDER_TYPE", glyph_render_type);
+-    lib.addCSourceFiles(.{
++    lib.root_module.addCSourceFiles(.{
+         .root = b.path("lib"),
+         .files = SOURCE_FILES,
+         .flags = COMPILE_FLAGS,
+@@ -60,7 +61,7 @@
+     }
+ 
+     // include the C wrapper
+-    lib.addCSourceFiles(.{
++    lib.root_module.addCSourceFiles(.{
+         .root = b.path("lib"),
+         .files = CWRAPPER_FILES,
+         .flags = COMPILE_FLAGS,
+@@ -78,21 +79,22 @@
+         .root_module = b.createModule(.{
+             .target = target,
+             .optimize = optimize,
++            .pic = true,
+         }),
+     });
+ 
+-    exe.linkLibrary(lib);
+-    exe.addIncludePath(b.path("zig-out/include"));
+-    exe.addIncludePath(b.path("example/samples"));
+-    exe.addIncludePath(b.path("example/memcheck"));
+-    exe.addCSourceFiles(.{
++    exe.root_module.linkLibrary(lib);
++    exe.root_module.addIncludePath(b.path("zig-out/include"));
++    exe.root_module.addIncludePath(b.path("example/samples"));
++    exe.root_module.addIncludePath(b.path("example/memcheck"));
++    exe.root_module.addCSourceFiles(.{
+         .files = &.{
+             "example/samples/samples.cpp",
+             "example/memcheck/mem_check_main.cpp",
+         },
+         .flags = COMPILE_FLAGS,
+     });
+-    exe.addIncludePath(b.path("lib"));
++    exe.root_module.addIncludePath(b.path("lib"));
+ 
+     const memcheck_step = b.step("memcheck", "Build the memcheck binary.");
+     memcheck_step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+--- /dev/null
++++ b/lib/core/parse_limits.h
+@@ -0,0 +1,54 @@
++#ifndef MICROTEX_PARSE_LIMITS_H
++#define MICROTEX_PARSE_LIMITS_H
++
++#include <cstddef>
++#include <string>
++
++namespace microtex {
++
++// Deliberately not std::exception: partial parsing must not swallow limit failures.
++struct ParseLimitExceeded {};
++
++struct ParseLimits {
++  // Allow expansion beyond the 4 KiB public input limit, but bound synchronous work.
++  static constexpr size_t bytes_max = 64 * 1024;
++  size_t work_left = 1024 * 1024;
++  size_t replacements_left = 1024;
++  size_t depth = 0;
++
++  void spend(size_t work = 1) {
++    if (work > work_left) throw ParseLimitExceeded{};
++    work_left -= work;
++  }
++
++  void input(size_t bytes) {
++    if (bytes > bytes_max) throw ParseLimitExceeded{};
++    spend(bytes);
++  }
++
++  void replace(std::string& source, size_t pos, size_t count, const std::string& text) {
++    if (replacements_left == 0 || text.size() > bytes_max ||
++        source.size() > bytes_max - text.size()) throw ParseLimitExceeded{};
++    --replacements_left;
++    spend(source.size() + text.size());
++    source.replace(pos, count, text);
++  }
++};
++
++// Nested parsers and macro argument substitutions share the caller's budget.
++inline thread_local ParseLimits parse_limits;
++
++struct ParseDepth {
++  ParseDepth() {
++    parse_limits.spend();
++    if (parse_limits.depth >= 64) throw ParseLimitExceeded{};
++    ++parse_limits.depth;
++  }
++  ~ParseDepth() { --parse_limits.depth; }
++  ParseDepth(const ParseDepth&) = delete;
++  ParseDepth& operator=(const ParseDepth&) = delete;
++};
++
++} // namespace microtex
++
++#endif
+--- a/lib/core/parser.cpp
++++ b/lib/core/parser.cpp
+@@ -1,4 +1,5 @@
+ #include "core/parser.h"
++#include "core/parse_limits.h"
+ 
+ #include "atom/atom.h"
+ #include "atom/atom_basic.h"
+@@ -39,6 +40,7 @@
+ }  // namespace
+ 
+ void Parser::init(bool isPartial, const string& latex, Formula* formula, bool firstPass) {
++  parse_limits.input(latex.size());
+   _pos = _spos = _len = 0;
+   _group = 0;
+   _atIsLetter = 0;
+@@ -62,6 +64,7 @@
+ }
+ 
+ void Parser::reset(const string& latex) {
++  parse_limits.input(latex.size());
+   _latex = latex;
+   _len = latex.length();
+   _formula->_root = nullptr;
+@@ -284,7 +287,7 @@
+ }
+ 
+ void Parser::insert(int beg, int end, const string& formula) {
+-  _latex.replace(beg, end - beg, formula);
++  parse_limits.replace(_latex, beg, end - beg, formula);
+   _len = _latex.length();
+   _pos = beg;
+   _insertion = true;
+@@ -363,6 +366,8 @@
+ }
+ 
+ void Parser::getOptsArgs(int argc, int opts, Args& args) {
++  ParseDepth depth;
++  if (argc < 0 || argc > 10) throw ParseLimitExceeded{};
+   // A maximum of 10 options can be passed to a command,
+   // the value will be added at the tail of the args if found any,
+   // the last (maximum to 12th) value is reserved for returned value
+@@ -536,6 +541,7 @@
+ }
+ 
+ sptr<Atom> Parser::getArgument() {
++  ParseDepth depth;
+   skipWhiteSpace();
+   char ch;
+   if (_pos < _len)
+@@ -619,7 +625,7 @@
+   auto mac = MacroInfo::get(cmd);
+   getOptsArgs(mac->argc, mac->opt, args);
+   mac->invoke(*this, args);
+-  _latex.erase(pos, _pos - pos);
++  parse_limits.replace(_latex, pos, _pos - pos, "");
+   _len = _latex.length();
+   _pos = pos;
+ }
+@@ -632,7 +638,7 @@
+   try {
+     mac->invoke(*this, args);
+     // The last element is the returned value (after inflated macro)
+-    _latex.replace(pos, _pos - pos, args.back());
++    parse_limits.replace(_latex, pos, _pos - pos, args.back());
+   } catch (ex_parse& e) {
+     if (!_isPartial) throw e;
+     pos += cmd.length() + 1;
+@@ -654,7 +660,7 @@
+   string expr = "{\\makeatletter \\" + args[1] + "@env";
+   for (int i = 1; i <= mac->argc - 1; i++) expr += "{" + optargs[i] + "}";
+   expr += "{" + grp + "}\\makeatother}";
+-  _latex.replace(pos, _pos - pos, expr);
++  parse_limits.replace(_latex, pos, _pos - pos, expr);
+   _len = _latex.length();
+   _pos = pos;
+ }
+@@ -666,6 +672,7 @@
+   int spos;
+   vector<string> args;
+   while (_pos < _len) {
++    parse_limits.spend();
+     ch = _latex[_pos];
+     switch (ch) {
+       case ESCAPE: {
+@@ -687,7 +694,7 @@
+           if (chr == '\r' || chr == '\n') break;
+         }
+         if (_pos < _len) _pos--;
+-        _latex.replace(spos, _pos - spos, "");
++        parse_limits.replace(_latex, spos, _pos - spos, "");
+         _len = _latex.length();
+         _pos = spos;
+         break;
+@@ -700,6 +707,7 @@
+ }
+ 
+ void Parser::parse() {
++  ParseDepth depth;
+   if (_len == 0) {
+     if (_formula->_root == nullptr && !_arrayMode) _formula->add(sptrOf<EmptyAtom>());
+     return;
+@@ -707,6 +715,7 @@
+ 
+   char ch;
+   while (_pos < _len) {
++    parse_limits.spend();
+     ch = _latex[_pos];
+ 
+     switch (ch) {
+--- a/lib/utils/string_utils.h
++++ b/lib/utils/string_utils.h
+@@ -8,6 +8,7 @@
+ #include <map>
+ #include <string>
+ #include <vector>
++#include "core/parse_limits.h"
+ 
+ namespace microtex {
+ 
+@@ -119,7 +120,7 @@
+   if (from.empty()) return src;
+   size_t start = 0;
+   while ((start = src.find(from, start)) != std::string::npos) {
+-    src.replace(start, from.length(), to);
++    parse_limits.replace(src, start, from.length(), to);
+     start += to.length();
+   }
+   return src;
+--- a/lib/wrapper/byte_seq.cpp
++++ b/lib/wrapper/byte_seq.cpp
+@@ -3,6 +3,7 @@
+ #include "wrapper/byte_seq.h"
+ 
+ #include <cstdlib>
++#include <new>
+ 
+ #include "utils/log.h"
+ 
+@@ -10,11 +11,16 @@
+ 
+ ByteSeq::ByteSeq() {
+   _data = malloc(CHUNK_SIZE);
++  if (_data == nullptr) throw std::bad_alloc();
+   // the first 4 bytes is the bytes size used
+   _index = 4;
+   _capacity = CHUNK_SIZE;
+ }
+ 
++ByteSeq::~ByteSeq() {
++  free(_data);
++}
++
+ void ByteSeq::_put(const char* str) {
+   auto l = sizeOf(str);
+   strcpy((char*)_data + _index, str);
+@@ -28,8 +34,11 @@
+ #ifdef HAVE_LOG
+   logv("grow buffer, _capacity: %u, to be add: %u\n", _capacity, required);
+ #endif
+-  _data = realloc(_data, _capacity + CHUNK_SIZE);
+-  _capacity += CHUNK_SIZE;
++  const auto capacity = _index + required + CHUNK_SIZE;
++  auto data = realloc(_data, capacity);
++  if (data == nullptr) throw std::bad_alloc();
++  _data = data;
++  _capacity = capacity;
+ }
+ 
+ void* ByteSeq::finish() {
+@@ -38,7 +47,8 @@
+ #endif
+   auto ptr = (unsigned int*)_data;
+   *ptr = _index;
+-  return _data;
++  _data = nullptr;
++  return ptr;
+ }
+ 
+ }  // namespace microtex
+--- a/lib/wrapper/byte_seq.h
++++ b/lib/wrapper/byte_seq.h
+@@ -52,6 +52,7 @@
+   no_copy_assign(ByteSeq);
+ 
+   ByteSeq();
++  ~ByteSeq();
+ 
+   template <typename T, typename... Ts>
+   void put(T t, Ts... ts) {
+--- a/lib/wrapper/cwrapper.cpp
++++ b/lib/wrapper/cwrapper.cpp
+@@ -3,6 +3,7 @@
+ #include "wrapper/cwrapper.h"
+ 
+ #include "microtex.h"
++#include "core/parse_limits.h"
+ #include "utils/log.h"
+ #include "wrapper/graphic_wrapper.h"
+ 
+@@ -136,16 +137,22 @@
+ #ifdef HAVE_LOG
+   logv("parse: %s\n", tex);
+ #endif
+-  auto r = MicroTeX::parse(
+-    tex,
+-    width,
+-    textSize,
+-    lineSpace,
+-    color,
+-    fillWidth,
+-    {enableOverrideTeXStyle, static_cast<TexStyle>(texStyle)}
+-  );
+-  return reinterpret_cast<RenderPtr>(r);
++  try {
++    parse_limits = {};
++    auto r = MicroTeX::parse(
++      tex,
++      width,
++      textSize,
++      lineSpace,
++      color,
++      fillWidth,
++      {enableOverrideTeXStyle, static_cast<TexStyle>(texStyle)}
++    );
++    return reinterpret_cast<RenderPtr>(r);
++  } catch (...) {
++    // C++ exceptions cannot unwind through the Zig/C ABI.
++    return nullptr;
++  }
+ }
+ 
+ MICROTEX_CAPI void microtex_deleteRender(RenderPtr render) {
+@@ -154,10 +161,14 @@
+ }
+ 
+ MICROTEX_CAPI DrawingData microtex_getDrawingData(RenderPtr render, int x, int y) {
+-  auto r = reinterpret_cast<Render*>(render);
+-  Graphics2D_wrapper g2;
+-  r->draw(g2, x, y);
+-  return g2.getDrawingData();
++  try {
++    auto r = reinterpret_cast<Render*>(render);
++    Graphics2D_wrapper g2;
++    r->draw(g2, x, y);
++    return g2.getDrawingData();
++  } catch (...) {
++    return nullptr;
++  }
+ }
+ 
+ MICROTEX_CAPI void microtex_freeDrawingData(DrawingData data) {
+--- a/lib/atom/atom_matrix.cpp
++++ b/lib/atom/atom_matrix.cpp
+@@ -1,11 +1,13 @@
+ #include "atom/atom_matrix.h"
+ 
++#include <charconv>
+ #include <memory>
+ 
+ #include "atom/atom_basic.h"
+ #include "atom/atom_row.h"
+ #include "core/formula.h"
+ #include "core/glue.h"
++#include "core/parse_limits.h"
+ #include "env/env.h"
+ #include "utils/exceptions.h"
+ #include "utils/string_utils.h"
+@@ -31,6 +33,8 @@
+ }
+ 
+ void MatrixAtom::parsePositions(string opt, vector<Alignment>& lpos) {
++  ParseDepth depth;
++  parse_limits.input(opt.size());
+   int len = opt.length();
+   int pos = 0;
+   char ch;
+@@ -39,6 +43,7 @@
+   // clear first
+   lpos.clear();
+   while (pos < len) {
++    parse_limits.spend();
+     ch = opt[pos];
+     switch (ch) {
+       case 'l': lpos.push_back(Alignment::left); break;
+@@ -79,11 +84,22 @@
+         vector<string> args;
+         tp->getOptsArgs(2, 0, args);
+         pos += tp->getPos();
+-        int nrep = 0;
+-        valueOf(args[1], nrep);
++        size_t nrep = 0;
++        const auto& count = trim(args[1]);
++        auto first = count.data();
++        if (!count.empty() && count.front() == '+') ++first;
++        const auto parsed = from_chars(first, count.data() + count.size(), nrep);
++        if (parsed.ec != errc{} || parsed.ptr != count.data() + count.size() ||
++            nrep > ParseLimits::bytes_max ||
++            (!args[2].empty() && nrep > (ParseLimits::bytes_max - opt.size()) / args[2].size())) {
++          throw ParseLimitExceeded{};
++        }
++        const auto bytes = nrep * args[2].size();
++        parse_limits.spend(nrep + bytes);
+         string str;
+-        for (int j = 0; j < nrep; j++) str += args[2];
+-        opt.insert(pos, str);
++        str.reserve(bytes);
++        for (size_t j = 0; j < nrep; j++) str += args[2];
++        parse_limits.replace(opt, pos, 0, str);
+         len = opt.length();
+         pos--;
+       } break;
+@@ -102,10 +118,11 @@
+         int spos = len + 1;
+         bool hasrep = false;
+         while (--spos > pos) {
++          parse_limits.spend(spos - pos);
+           auto it = _colspeReplacement.find(opt.substr(pos, spos - pos));
+           if (it != _colspeReplacement.end()) {
+             hasrep = true;
+-            opt.insert(spos, it->second);
++            parse_limits.replace(opt, spos, 0, it->second);
+             len = opt.length();
+             pos = spos - 1;
+             break;
+@@ -127,9 +144,9 @@
+   if (lpos.empty()) lpos.push_back(Alignment::center);
+ }
+ 
+-float* MatrixAtom::getColumnSep(Env& env, float width) {
++vector<float> MatrixAtom::getColumnSep(Env& env, float width) {
+   const int cols = _matrix->cols();
+-  auto* arr = new float[cols + 1]();
++  vector<float> arr(cols + 1);
+   sptr<Box> Align, AlignSep, Hsep;
+   float h, w = env.textWidth();
+   int i = 0;
+@@ -234,7 +251,7 @@
+ 
+ void MatrixAtom::recalculateLine(
+   const int rows,
+-  sptr<Box>** boxarr,
++  vector<vector<sptr<Box>>>& boxarr,
+   vector<sptr<Atom>>& multiRows,
+   float* height,
+   float* depth,
+@@ -406,11 +423,11 @@
+   const int rows = _matrix->rows();
+   const int cols = _matrix->cols();
+ 
+-  auto lineDepth = new float[rows]();
+-  auto lineHeight = new float[rows]();
+-  auto colWidth = new float[cols]();
+-  auto boxarr = new sptr<Box>*[rows]();
+-  for (int i = 0; i < rows; i++) boxarr[i] = new sptr<Box>[cols]();
++  vector<float> lineDepth(rows);
++  vector<float> lineHeight(rows);
++  vector<float> colWidth(cols);
++  vector<vector<sptr<Box>>> boxarr(rows);
++  for (auto& row : boxarr) row.resize(cols);
+ 
+   float matW = 0;
+   const auto drt = env.ruleThickness();
+@@ -459,7 +476,7 @@
+   for (int j = 0; j < cols; j++) matW += colWidth[j];
+ 
+   // The horizontal separator's width
+-  float* Hsep = getColumnSep(env, matW);
++  auto Hsep = getColumnSep(env, matW);
+ 
+   for (auto& i : multiCols) {
+     auto* multi = (MulticolumnAtom*)i.get();
+@@ -486,9 +503,9 @@
+ 
+   auto Vsep = _vsep_in.createBox(env);
+   // Recalculate the height of the row
+-  recalculateLine(rows, boxarr, multiRows, lineHeight, lineDepth, drt, Vsep->_height);
++  recalculateLine(rows, boxarr, multiRows, lineHeight.data(), lineDepth.data(), drt, Vsep->_height);
+ 
+-  auto* vb = new VBox();
++  auto vb = sptrOf<VBox>();
+   float totalHeight = 0;
+   float Vspace = Vsep->_height / 2;
+ 
+@@ -511,11 +528,11 @@
+ 
+           bool isLastVline = true;
+ 
+-          WrapperBox* wb = nullptr;
++          sptr<WrapperBox> wb;
+           int tj = j;
+           float l = j == 0 ? Hsep[j] : Hsep[j] / 2;
+           if (boxarr[i][j]->_type == AtomType::none) {
+-            wb = new WrapperBox(
++            wb = sptrOf<WrapperBox>(
+               boxarr[i][j],
+               colWidth[j],
+               lineHeight[i],
+@@ -523,18 +540,17 @@
+               _position[j]  //
+             );
+           } else {
+-            auto b = generateMulticolumn(env, boxarr[i][j], Hsep, colWidth, i, j);
++            auto b = generateMulticolumn(env, boxarr[i][j], Hsep.data(), colWidth.data(), i, j);
+             auto* matom = (MulticolumnAtom*)_matrix->_array[i][j].get();
+             j += matom->skipped() - 1;
+-            wb = new WrapperBox(b, b->_width, lineHeight[i], lineDepth[i], Alignment::left);
++            wb = sptrOf<WrapperBox>(b, b->_width, lineHeight[i], lineDepth[i], Alignment::left);
+             isLastVline = matom->hasRightVline();
+           }
+           float r = j == cols - 1 ? Hsep[j + 1] : Hsep[j + 1] / 2;
+           wb->addInsets(l, Vspace, r, Vspace);
+           applyCell(*wb, i, j);
+-          sptr<Box> swb(wb);
+-          boxarr[i][tj] = swb;
+-          hb->add(swb);
++          boxarr[i][tj] = wb;
++          hb->add(wb);
+ 
+           auto it = _vlines.find(j + 1);
+           if (isLastVline && it != _vlines.end()) {
+@@ -582,14 +598,7 @@
+   vb->_height = totalHeight / 2 + axis;
+   vb->_depth = totalHeight / 2 - axis;
+ 
+-  delete[] Hsep;
+-  delete[] lineDepth;
+-  delete[] lineHeight;
+-  delete[] colWidth;
+-  for (int i = 0; i < rows; i++) delete[] boxarr[i];
+-  delete[] boxarr;
+-
+-  return sptr<Box>(vb);
++  return vb;
+ }
+ 
+ sptr<Box> MatrixAtom::createBox(Env& env) {
+@@ -709,13 +718,13 @@
+   const auto drt = env.ruleThickness();
+   auto rb = sptrOf<RuleBox>(_height, drt, _shift, MatrixAtom::LINE_COLOR, true);
+   auto sep = sptrOf<StrutBox>(2 * drt, 0.f, 0.f, 0.f);
+-  auto hb = new HBox();
++  auto hb = sptrOf<HBox>();
+   for (int i = 0; i < _n - 1; i++) {
+     hb->add(rb);
+     hb->add(sep);
+   }
+   if (_n > 0) hb->add(rb);
+-  return sptr<Box>(hb);
++  return hb;
+ }
+ 
+ SpaceAtom MultlineAtom::_vsep_in(UnitType::ex, 0.f, 1.f, 0.f);
+@@ -725,7 +734,7 @@
+   if (tw == POS_INF || _lineType == MultiLineType::gathered)
+     return MatrixAtom(_isPartial, _column, "").createBox(env);
+ 
+-  auto* vb = new VBox();
++  auto vb = sptrOf<VBox>();
+   auto atom = _column->_array[0][0];
+   Alignment alignment = _lineType == MultiLineType::gather ? Alignment::center : Alignment::left;
+   if (atom->_alignment != Alignment::none) alignment = atom->_alignment;
+@@ -752,5 +761,5 @@
+   vb->_height = h / 2;
+   vb->_depth = h / 2;
+ 
+-  return sptr<Box>(vb);
++  return vb;
+ }
+--- a/lib/macro/macro_env.h
++++ b/lib/macro/macro_env.h
+@@ -11,68 +11,68 @@
+ namespace microtex {
+ 
+ inline macro(smallmatrixATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser parser(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser parser(tp.isPartial(), args[1], arr.get(), false);
+   parser.parse();
+   arr->checkDimensions();
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::smallMatrix);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::smallMatrix);
+ }
+ 
+ inline macro(matrixATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser parser(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser parser(tp.isPartial(), args[1], arr.get(), false);
+   parser.parse();
+   arr->checkDimensions();
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::matrix);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::matrix);
+ }
+ 
+ inline macro(arrayATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser parser(tp.isPartial(), args[2], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser parser(tp.isPartial(), args[2], arr.get(), false);
+   parser.parse();
+   arr->checkDimensions();
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), args[1], true);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, args[1], true);
+ }
+ 
+ inline macro(alignATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser parser(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser parser(tp.isPartial(), args[1], arr.get(), false);
+   parser.parse();
+   arr->checkDimensions();
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::align);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::align);
+ }
+ 
+ inline macro(flalignATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser parser(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser parser(tp.isPartial(), args[1], arr.get(), false);
+   parser.parse();
+   arr->checkDimensions();
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::flAlign);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::flAlign);
+ }
+ 
+ inline macro(alignatATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser par(tp.isPartial(), args[2], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser par(tp.isPartial(), args[2], arr.get(), false);
+   par.parse();
+   arr->checkDimensions();
+   size_t n = 0;
+   valueOf(args[1], n);
+   if (arr->cols() != 2 * n) throw ex_parse("Bad number of equations in alignat environment!");
+ 
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::alignAt);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::alignAt);
+ }
+ 
+ inline macro(alignedATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser p(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser p(tp.isPartial(), args[1], arr.get(), false);
+   p.parse();
+   arr->checkDimensions();
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::aligned);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::aligned);
+ }
+ 
+ inline macro(alignedatATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser p(tp.isPartial(), args[2], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser p(tp.isPartial(), args[2], arr.get(), false);
+   p.parse();
+   arr->checkDimensions();
+   size_t n = 0;
+@@ -81,12 +81,12 @@
+     throw ex_parse("Bad number of equations in alignedat environment!");
+   }
+ 
+-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::alignedAt);
++  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::alignedAt);
+ }
+ 
+ inline macro(multlineATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser p(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser p(tp.isPartial(), args[1], arr.get(), false);
+   p.parse();
+   arr->checkDimensions();
+   if (arr->cols() > 1) {
+@@ -94,29 +94,29 @@
+   }
+   if (arr->cols() == 0) return nullptr;
+ 
+-  return sptrOf<MultlineAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MultiLineType::multiline);
++  return sptrOf<MultlineAtom>(tp.isPartial(), arr, MultiLineType::multiline);
+ }
+ 
+ inline macro(gatherATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser p(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser p(tp.isPartial(), args[1], arr.get(), false);
+   p.parse();
+   arr->checkDimensions();
+   if (arr->cols() > 1) throw ex_parse("Requires exact one column in gather environment!");
+   if (arr->cols() == 0) return nullptr;
+ 
+-  return sptrOf<MultlineAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MultiLineType::gather);
++  return sptrOf<MultlineAtom>(tp.isPartial(), arr, MultiLineType::gather);
+ }
+ 
+ inline macro(gatheredATATenv) {
+-  auto* arr = new ArrayFormula();
+-  Parser p(tp.isPartial(), args[1], arr, false);
++  auto arr = sptrOf<ArrayFormula>();
++  Parser p(tp.isPartial(), args[1], arr.get(), false);
+   p.parse();
+   arr->checkDimensions();
+   if (arr->cols() > 1) throw ex_parse("Requires exact one column in gathered environment!");
+   if (arr->cols() == 0) return nullptr;
+ 
+-  return sptrOf<MultlineAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MultiLineType::gathered);
++  return sptrOf<MultlineAtom>(tp.isPartial(), arr, MultiLineType::gathered);
+ }
+ 
+ inline macro(multicolumn) {
+--- a/lib/atom/atom_matrix.h
++++ b/lib/atom/atom_matrix.h
+@@ -87,7 +87,7 @@
+ 
+   static void recalculateLine(
+     int rows,
+-    sptr<Box>** boxarr,
++    std::vector<std::vector<sptr<Box>>>& boxarr,
+     std::vector<sptr<Atom>>& multiRows,
+     float* height,
+     float* depth,
+@@ -95,7 +95,7 @@
+     float vspace
+   );
+ 
+-  float* getColumnSep(Env& env, float width);
++  std::vector<float> getColumnSep(Env& env, float width);
+ 
+   void applyCell(WrapperBox& box, int i, int j);
+ 
+--- a/lib/atom/atom_row.cpp
++++ b/lib/atom/atom_row.cpp
+@@ -172,7 +172,7 @@
+ }
+ 
+ sptr<Box> RowAtom::createBox(Env& env) {
+-  auto hbox = new HBox();
++  auto hbox = sptrOf<HBox>();
+   // convert atoms to boxes and add to the horizontal box
+   const int end = _elements.size() - 1;
+   for (int i = -1; i < end;) {
+@@ -326,7 +326,7 @@
+   }
+   // reset previous atom
+   _previousAtom = nullptr;
+-  return sptr<Box>(hbox);
++  return hbox;
+ }
+ 
+ void RowAtom::setPreviousAtom(const sptr<AtomDecor>& prev) {
+--- a/lib/macro/macro_delims.cpp
++++ b/lib/macro/macro_delims.cpp
+@@ -13,18 +13,18 @@
+     StackArgs::autoSpace(Formula(tp, args[1], false, tp.isMathMode())._root, false);
+   const auto& under =
+     StackArgs::autoSpace(Formula(tp, args[2], false, tp.isMathMode())._root, false);
+-  const auto stack = new StackAtom(nullptr, over, under);
++  const auto stack = sptrOf<StackAtom>(nullptr, over, under);
+   const auto& arrow = sptrOf<ExtensibleAtom>(
+     name,
+     // capture raw pointer to avoid cycle reference
+-    [stack](const Env& env) -> float {
++    [stack = stack.get()](const Env& env) -> float {
+       return stack->getMaxWidth() + Units::fsize(UnitType::ex, 1.f, env);
+     },
+     false
+   );
+   arrow->_type = AtomType::relation;
+   stack->setBaseAtom(arrow);
+-  return sptr<StackAtom>(stack);
++  return stack;
+ }
+ 
+ macro(left) {
+@@ -45,12 +45,12 @@
+     return sptrOf<FencedAtom>(tf._root, sl->name(), sr->name(), tf.middle());
+   }
+ 
+-  auto* ra = new RowAtom();
++  auto ra = sptrOf<RowAtom>();
+   ra->add(left);
+   ra->add(Formula(tp, grep, false)._root);
+   ra->add(right);
+ 
+-  return sptr<Atom>(ra);
++  return ra;
+ }
+ 
+ }  // namespace microtex

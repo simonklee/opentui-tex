@@ -30,3 +30,17 @@ The native context is process-owned. `destroy()` releases renderer-instance
 queues and caches. Node 26.4 can retain its experimental FFI handle during
 shutdown, so short-lived Node programs may need to call `process.exit()` after
 application cleanup. Re-test this restriction when upgrading Node's FFI.
+
+## Input limits
+
+Native rendering rejects invalid UTF-8, embedded NULs, unsupported glyphs, and
+formulas that exceed parser budgets. Expansion permits at most 64 KiB per
+string, 1,024 replacements, and 64 nested parser frames. Nested parsers also
+share a work budget for scanning and string copies. These failures return
+errors instead of terminating the application. Set `fallback: "unicode"`
+to keep the semantic preview when native rendering fails.
+
+Rendering runs synchronously on the main thread. An `AbortSignal` can cancel
+queued work, but cannot interrupt an active native call. Parser budgets are not
+a security sandbox; use a separate process if you need hard time or memory
+limits for untrusted input.

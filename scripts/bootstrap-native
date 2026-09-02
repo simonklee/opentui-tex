@@ -4,8 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 readonly vendor=native/vendor
-readonly stamp="$vendor/.bootstrap-v5"
-readonly stamp_value='zigtex=fda2819e45f57ca2071810c47249a46bfc782cdf microtex=74e8fee9e47edc3a777e64fb2eff9a85a01defac nanosvg=239e102ec2c691f2902e20ace2ed36ee4a35cfe6 zig=0.16-v5'
+readonly stamp="$vendor/.bootstrap-v8"
+readonly stamp_value='zigtex=fda2819e45f57ca2071810c47249a46bfc782cdf microtex=74e8fee9e47edc3a777e64fb2eff9a85a01defac nanosvg=239e102ec2c691f2902e20ace2ed36ee4a35cfe6 zig=0.16-v8'
 mkdir -p "$vendor"
 
 download() {
@@ -14,15 +14,25 @@ download() {
     --connect-timeout 20 --max-time 180 "$url" --output "$output"
 }
 
+verify_checksum() {
+  local expected=$1 path=$2 actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$path") || return
+  else
+    actual=$(shasum -a 256 "$path") || return
+  fi
+  [[ "${actual%% *}" == "$expected" ]]
+}
+
 fetch_file() {
   local name=$1 url=$2 expected=$3 path="$vendor/$1" temporary
-  if [[ -f "$path" ]] && echo "$expected  $path" | sha256sum --check --status; then
+  if [[ -f "$path" ]] && verify_checksum "$expected" "$path"; then
     return
   fi
   temporary=$(mktemp "$vendor/.download.XXXXXX")
   trap 'rm -f "$temporary"' RETURN
   download "$url" "$temporary"
-  echo "$expected  $temporary" | sha256sum --check --status
+  verify_checksum "$expected" "$temporary"
   mv "$temporary" "$path"
   trap - RETURN
 }
@@ -33,7 +43,7 @@ fetch_archive() {
   temporary=$(mktemp -d "$vendor/.extract.XXXXXX")
   trap 'rm -rf "$archive" "$temporary"' RETURN
   download "$url" "$archive"
-  echo "$expected  $archive" | sha256sum --check --status
+  verify_checksum "$expected" "$archive"
   tar --extract --gzip --file "$archive" --directory "$temporary" --strip-components=1
   rm -rf "$vendor/$name"
   mv "$temporary" "$vendor/$name"
@@ -59,25 +69,8 @@ if [[ ! -f "$stamp" ]] || [[ "$(<"$stamp")" != "$stamp_value" ]]; then
     https://github.com/fjebaker/MicroTeX/archive/74e8fee9e47edc3a777e64fb2eff9a85a01defac.tar.gz \
     8da1600f75a674d465715b1d3e0c2bfd84adab128b45e91253ecfa46f856a963
 
-  sed -i \
-    -e 's#            .url = .*#            .path = "../microtex",#' \
-    -e '/            .hash = /d' \
-    "$vendor/zigtex/build.zig.zon"
-  sed -i \
-    -e 's/conf_header.getOutput()/conf_header.getOutputFile()/' \
-    -e 's/lib.linkLibCpp();/lib.root_module.link_libcpp = true;/' \
-    -e 's/lib.addConfigHeader/lib.root_module.addConfigHeader/g' \
-    -e 's/lib.addIncludePath/lib.root_module.addIncludePath/g' \
-    -e 's/lib.addCSourceFiles/lib.root_module.addCSourceFiles/g' \
-    -e 's/exe.addIncludePath/exe.root_module.addIncludePath/g' \
-    -e 's/exe.addCSourceFiles/exe.root_module.addCSourceFiles/g' \
-    -e 's/exe.linkLibrary/exe.root_module.linkLibrary/g' \
-    -e '/            .optimize = optimize,/a\            .pic = true,' \
-    "$vendor/microtex/build.zig"
-  patch --directory "$vendor/zigtex" --strip 1 < native/zigtex-0.16.patch
-  sed -i \
-    's/c.microtex_init(content.len, content.ptr)/c.microtex_init(@intCast(content.len), content.ptr)/' \
-    "$vendor/zigtex/src/tex.zig"
+  patch -d "$vendor/zigtex" -p1 < native/zigtex-0.16.patch
+  patch -d "$vendor/microtex" -p1 < native/microtex.patch
   printf '%s\n' "$stamp_value" > "$stamp"
 fi
 

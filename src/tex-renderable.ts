@@ -6,9 +6,11 @@ import {
   type NativeImage,
   type RenderContext,
   TextRenderable,
+  Yoga,
 } from "@opentui/core"
 import stringWidth from "string-width"
 import type { TexBackend, TexRenderOutput, TexRenderRequest } from "./backend.js"
+import { graphemeSegmenter } from "./math-graphemes.js"
 import { renderIncompleteUnicode, UNICODE_TEX_SOURCE_LENGTH_MAX, UnicodeTexBackend } from "./unicode-tex-backend.js"
 
 export type { TexBackend, TexRenderOutput, TexRenderRequest } from "./backend.js"
@@ -16,6 +18,8 @@ export type { TexBackend, TexRenderOutput, TexRenderRequest } from "./backend.js
 const NATIVE_SUPERSAMPLE = 4
 const RESIZE_AREA_THRESHOLD = 1.3
 const DEFAULT_PREVIEW_BACKEND = new UnicodeTexBackend()
+const UNICODE_RENDER = UnicodeTexBackend.prototype.render
+const UNICODE_RENDER_SYNC = UnicodeTexBackend.prototype.renderSync
 
 export type TexFallback = "message" | "throw" | "retain" | "unicode"
 
@@ -75,7 +79,7 @@ export class TexRenderable extends BoxRenderable {
   private readonly heightMax: number
   private autoWidth: boolean
   private autoHeight: boolean
-  private trackExplicitDimensions = false
+  private requestedAlignSelf: Yoga.Align
   private currentDimensions: TexDimensions = { columns: 1, rows: 1 }
   private readonly imageOptions?: TexRenderableOptions["imageOptions"]
   private readonly onError?: (error: unknown) => void
@@ -105,8 +109,9 @@ export class TexRenderable extends BoxRenderable {
     super(context, {
       shouldFill: false,
       ...boxOptions,
-      width: options.width ?? 1,
-      height: options.height ?? 1,
+      flexShrink: options.flexShrink ?? (typeof options.width === "string" && typeof options.height === "string" ? 1 : 0),
+      width: options.width ?? "auto",
+      height: options.height ?? "auto",
     })
     this._formula = formula
     this._foreground = foreground
@@ -117,9 +122,9 @@ export class TexRenderable extends BoxRenderable {
     this.fallback = fallback
     this.widthMax = dimensionMax(widthMax)
     this.heightMax = dimensionMax(heightMax)
-    this.autoWidth = options.width === undefined
-    this.autoHeight = options.height === undefined
-    this.trackExplicitDimensions = true
+    this.autoWidth = options.width == null || options.width === "auto"
+    this.autoHeight = options.height == null || options.height === "auto"
+    this.requestedAlignSelf = this.yogaNode.getAlignSelf()
     this.imageOptions = imageOptions
     this.onError = onError
     this.ready = this.update(formula, foreground, background, display)
@@ -146,13 +151,9 @@ export class TexRenderable extends BoxRenderable {
   }
 
   override set width(value: number | "auto" | `${number}%`) {
-    if (this.trackExplicitDimensions && (value === "auto" || value == null)) {
-      this.autoWidth = true
-      super.width = this.currentDimensions.columns
-      return
-    }
-    super.width = value
-    if (this.trackExplicitDimensions) this.autoWidth = false
+    super.width = value ?? "auto"
+    this.autoWidth = value === "auto" || value == null
+    for (const child of this.getChildren()) child.width = this.autoWidth ? this.currentDimensions.columns : "100%"
   }
 
   override get height(): number {
@@ -160,13 +161,23 @@ export class TexRenderable extends BoxRenderable {
   }
 
   override set height(value: number | "auto" | `${number}%`) {
-    if (this.trackExplicitDimensions && (value === "auto" || value == null)) {
-      this.autoHeight = true
-      super.height = this.currentDimensions.rows
-      return
-    }
-    super.height = value
-    if (this.trackExplicitDimensions) this.autoHeight = false
+    super.height = value ?? "auto"
+    this.autoHeight = value === "auto" || value == null
+    for (const child of this.getChildren()) child.height = this.autoHeight ? this.currentDimensions.rows : "100%"
+  }
+
+  override set alignSelf(value: TexRenderableOptions["alignSelf"] | null) {
+    super.alignSelf = value
+    this.requestedAlignSelf = this.yogaNode.getAlignSelf()
+  }
+
+  override onLifecyclePass = (): void => {
+    if (!this.parent) return
+    const crossAuto = this.parent.primaryAxis === "column" ? this.autoWidth : this.autoHeight
+    const alignment = this.requestedAlignSelf === Yoga.Align.Auto ? this.parent.getLayoutNode().getAlignItems() : this.requestedAlignSelf
+    // Intrinsic formulas stay compact under stretch, but still inherit center/end alignment.
+    const resolved = crossAuto && alignment === Yoga.Align.Stretch ? Yoga.Align.FlexStart : this.requestedAlignSelf
+    if (this.yogaNode.getAlignSelf() !== resolved) this.yogaNode.setAlignSelf(resolved)
   }
 
   get streaming(): boolean {
@@ -225,6 +236,8 @@ export class TexRenderable extends BoxRenderable {
     this._display = display
     if (!formula) {
       this.clearOutput()
+      this.currentDimensions = { columns: 1, rows: 1 }
+      this.yogaNode.setMeasureFunc(() => ({ width: 1, height: 1 }))
       if (!this._streaming) {
         disposeOutput(this.committedOutput)
         this.committedOutput = null
@@ -248,14 +261,19 @@ export class TexRenderable extends BoxRenderable {
       return
     }
     let unicodeOutput: TexRenderOutput | null = null
-    try {
-      unicodeOutput = DEFAULT_PREVIEW_BACKEND.renderSync(request)
-      this.applyOutput(unicodeOutput)
-    } catch {
-      // The primary backend may support input outside the Unicode subset.
+    const synchronousBackend = this.backend instanceof UnicodeTexBackend
+      && this.backend.render === UNICODE_RENDER
+      && this.backend.renderSync === UNICODE_RENDER_SYNC ? this.backend : null
+    if (!synchronousBackend) {
+      try {
+        unicodeOutput = DEFAULT_PREVIEW_BACKEND.renderSync(request)
+        this.applyOutput(unicodeOutput)
+      } catch {
+        // The primary backend may support input outside the Unicode subset.
+      }
     }
     try {
-      const output = await this.backend.render(request)
+      const output = synchronousBackend ? synchronousBackend.renderSync(request) : await this.backend.render(request)
       if (controller.signal.aborted || this.isDestroyed) {
         disposeOutput(output)
         return
@@ -278,6 +296,8 @@ export class TexRenderable extends BoxRenderable {
         }
       }
     } catch (error) {
+      // Publish readiness before observers can start a replacement request.
+      if (synchronousBackend) await Promise.resolve()
       if (!controller.signal.aborted && !this.isDestroyed) {
         if (this.fallback === "retain" && this.committedOutput) this.applyOutput(this.committedOutput)
         else if (this.fallback === "message" || (this.fallback === "unicode" && !unicodeOutput)) {
@@ -306,9 +326,6 @@ export class TexRenderable extends BoxRenderable {
 
   private clearOutput(): void {
     for (const existing of this.getChildren()) existing.destroyRecursively()
-    this.currentDimensions = { columns: 1, rows: 1 }
-    if (this.autoWidth) super.width = 1
-    if (this.autoHeight) super.height = 1
   }
 
   private applyOutput(output: TexRenderOutput): void {
@@ -321,15 +338,17 @@ export class TexRenderable extends BoxRenderable {
           content: output.text,
           fg: this._foreground,
           bg: this._background,
-          width: "100%",
-          height: "100%",
+          wrapMode: "none",
+          width: this.autoWidth ? dimensions.columns : "100%",
+          height: this.autoHeight ? dimensions.rows : "100%",
+          maxWidth: "100%",
+          maxHeight: "100%",
         })
     let added = false
     try {
       this.clearOutput()
       this.currentDimensions = dimensions
-      if (this.autoWidth) super.width = Math.max(1, dimensions.columns)
-      if (this.autoHeight) super.height = Math.max(1, dimensions.rows)
+      this.yogaNode.unsetMeasureFunc()
       this.add(child)
       added = true
     } finally {
@@ -353,10 +372,12 @@ export class TexRenderable extends BoxRenderable {
       return new ImageRenderable(this._ctx, {
         protocol: "auto",
         fit: "fit",
+        maxWidth: "100%",
+        maxHeight: "100%",
         ...this.imageOptions,
         source,
-        width: "100%",
-        height: "100%",
+        width: this.autoWidth ? dimensions.columns : "100%",
+        height: this.autoHeight ? dimensions.rows : "100%",
       })
     } finally {
       resized?.dispose()
@@ -405,7 +426,7 @@ function rawSourceOutput(source: string, widthMax: number, heightMax: number): T
     const restart = safeRawRestart(tail)
     tail = restart < 0 ? "" : tail.slice(restart)
   }
-  const tailGraphemes = graphemes(tail)
+  const tailGraphemes = Array.from(graphemeSegmenter.segment(tail), (part) => part.segment)
   const lines: string[] = []
   let line = ""
   let width = 0
@@ -440,12 +461,6 @@ function rawSourceOutput(source: string, widthMax: number, heightMax: number): T
     columns: visible ? Math.max(1, ...widths) : 1,
     rows: visible ? Math.max(1, visibleLines.length) : 1,
   }
-}
-
-function graphemes(value: string): string[] {
-  return typeof Intl.Segmenter === "function"
-    ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)].map((part) => part.segment)
-    : [...value]
 }
 
 function safeRawRestart(value: string): number {

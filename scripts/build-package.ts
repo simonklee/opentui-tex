@@ -7,6 +7,7 @@ const result = await Bun.build({
   outdir: "dist",
   target: "node",
   format: "esm",
+  splitting: true,
   packages: "external",
 })
 if (!result.success) {

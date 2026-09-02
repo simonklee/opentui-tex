@@ -90,10 +90,11 @@ const packages = names.map((name) => {
   } else {
     required.push(
       "build.zig", "build.zig.zon", "scripts/bootstrap-native", "LICENSE-PROJECT",
-      "native/lib.zig", "native/nanosvg.c", "native/zigtex-0.16.patch",
+      "native/lib.zig", "native/nanosvg.c", "native/zigtex-0.16.patch", "native/microtex.patch",
       "native/vendor/nanosvg.h", "native/vendor/nanosvgrast.h", "native/vendor/LICENSE-NANOSVG",
       "native/vendor/zigtex/build.zig", "native/vendor/zigtex/build.zig.zon", "native/vendor/zigtex/src/tex.zig", "native/vendor/zigtex/LICENSE",
       "native/vendor/microtex/build.zig", "native/vendor/microtex/LICENSE", "native/vendor/microtex/res/lm-math/README",
+      "native/vendor/microtex/lib/core/parse_limits.h",
     )
   }
   for (const entry of [manifest.main, manifest.module, manifest.types, ...Object.values(manifest.exports ?? {}).flatMap(Object.values)]) {

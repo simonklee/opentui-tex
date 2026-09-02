@@ -114,6 +114,9 @@ fn render(
     foreground: [3]u8,
     background: [3]u8,
 ) !void {
+    if (!std.unicode.utf8ValidateSlice(source) or std.mem.indexOfScalar(u8, source, 0) != null) {
+        return error.InvalidTex;
+    }
     var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -124,7 +127,7 @@ fn render(
         "#{x:0>2}{x:0>2}{x:0>2}",
         .{ foreground[0], foreground[1], foreground[2] },
     );
-    const renderer = &(renderer_instance orelse return error.InternalError);
+    const renderer = if (renderer_instance) |*value| value else return error.InternalError;
     const svg = renderer.parseRender(allocator, source, .{
         .size = 28,
         .spacing = 8,
@@ -137,11 +140,15 @@ fn render(
     const mutable_svg = try svgWithoutDescription(allocator, svg);
     const image = c.nsvgParse(mutable_svg.ptr, "px", 96) orelse return error.InvalidSvg;
     defer c.nsvgDelete(image);
-    const width: usize = @intFromFloat(@ceil(image.*.width * supersample));
-    const height: usize = @intFromFloat(@ceil(image.*.height * supersample));
-    if (width == 0 or height == 0 or width > dimension_max or height > dimension_max) {
+    const width_float = @ceil(image.*.width * supersample);
+    const height_float = @ceil(image.*.height * supersample);
+    if (!(width_float > 0 and width_float <= dimension_max) or
+        !(height_float > 0 and height_float <= dimension_max))
+    {
         return error.InvalidDimensions;
     }
+    const width: usize = @intFromFloat(width_float);
+    const height: usize = @intFromFloat(height_float);
     const pixel_length = std.math.mul(usize, width, height) catch return error.InvalidDimensions;
     const pixels_length = std.math.mul(usize, pixel_length, channels) catch return error.InvalidDimensions;
     if (pixels_length > std.math.maxInt(u32)) return error.InvalidDimensions;
