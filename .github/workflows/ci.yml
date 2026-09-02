@@ -25,7 +25,6 @@ jobs:
       - run: bun run typecheck
       - run: bun run test
       - run: bun run build:package
-      - run: bun run build:loader
 
   native-tests:
     name: Native tests
@@ -42,30 +41,13 @@ jobs:
       - run: bun run test:native
 
   native-packages:
-    name: ${{ matrix.package }}
+    name: Release packages
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-linux-gnu.2.17
-            package: opentui-tex-native-linux-x64
-          - target: aarch64-linux-gnu.2.17
-            package: opentui-tex-native-linux-arm64
-          - target: x86_64-linux-musl
-            package: opentui-tex-native-linux-x64-musl
-          - target: aarch64-linux-musl
-            package: opentui-tex-native-linux-arm64-musl
-          - target: x86_64-macos.13.0
-            package: opentui-tex-native-darwin-x64
-          - target: aarch64-macos.13.0
-            package: opentui-tex-native-darwin-arm64
-          - target: x86_64-windows-gnu
-            package: opentui-tex-native-win32-x64
-          - target: aarch64-windows-gnu
-            package: opentui-tex-native-win32-arm64
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.7.0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -73,9 +55,11 @@ jobs:
         with:
           version: 0.16.0
       - run: bun install --frozen-lockfile
-      - run: bash scripts/build-native --target ${{ matrix.target }}
+      - run: bun run build:release
+      - run: bun run test:release
+      - run: bun run publish:packages --dry-run
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.package }}
-          path: node_modules/@simonklee/${{ matrix.package }}
+          name: npm-packages
+          path: release/*.tgz
           if-no-files-found: error

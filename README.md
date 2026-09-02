@@ -25,41 +25,44 @@ The terminal shows selectable text cells:
 i = 1
 ```
 
-Two packages supply different output types:
+One package supplies two output types:
 
-- `@simonklee/opentui-tex` renders formulas as semantic Unicode cells. It does
-  not have native build or runtime dependencies.
-- `@simonklee/opentui-tex-native` renders formulas as images (Kitty, Sixel, or
+- `@simonklee/opentui-tex` renders formulas as semantic Unicode cells without
+  loading the TeX native library.
+- `@simonklee/opentui-tex/native` renders formulas as images (Kitty, Sixel, or
   block cells) through a prebuilt shared library.
 
-Both packages run on Bun and Node. The native package requires Node 26.4 or
+Both backends run on Bun and Node. Native rendering requires Node 26.4 or
 newer and experimental FFI flags. See [Images](#images).
 
 ## Install
 
-Until the packages are available from npm, install the two tarballs from the
-GitHub Release. Replace `v0.1.0` with the release that you want:
-
-```sh
-bun add \
-  https://github.com/simonklee/opentui-tex/releases/download/v0.1.0/simonklee-opentui-tex-0.1.0.tgz \
-  https://github.com/simonklee/opentui-tex/releases/download/v0.1.0/simonklee-opentui-tex-native-0.1.0.tgz
-```
-
-The native release tarball contains all eight platform libraries and selects
-the correct one at runtime. It is larger than the eventual npm package, which
-will use platform-specific optional dependencies.
-
-After the npm release, install from the registry:
+Starting with the npm release of 0.2.0, install one package:
 
 ```sh
 npm install @simonklee/opentui-tex
-npm install @simonklee/opentui-tex-native   # optional image output
 ```
 
-You can also use `bun add`. The native package uses optional dependencies to
-select a prebuilt library for the host platform. Prebuilt libraries exist for
+You can also use `bun add`. Like `@opentui/core`, the package uses optional
+dependencies to select a prebuilt library for the host platform. No local
+native build is required. Prebuilt libraries exist for
 x64 and arm64 on macOS, Windows, Linux glibc 2.17, and Linux musl.
+On Linux, Bun 1.3.14 installs both libc variants; the loader selects one at runtime.
+
+`@opentui/core` is a required peer dependency, not a bundled copy. Use the same
+version across your application and its OpenTUI bindings. This release requires
+`0.0.0-20260812-1d34234c`; compatibility with other Core versions is not yet
+verified. npm installs required peers automatically.
+
+The JavaScript package is MIT-licensed. The optional native binaries are
+GPL-3.0-only because they link ZigTeX. Each binary package includes its license
+notices, and `@simonklee/opentui-tex-native-source` contains the corresponding
+source at the same version. Review those licenses before redistributing native
+rendering. The source package is not a runtime dependency.
+
+For applications upgrading from the 0.1.0 GitHub tarballs, replace imports from
+`@simonklee/opentui-tex-native` with `@simonklee/opentui-tex/native` and remove
+the separate native dependency. The existing 0.1.0 release assets are unchanged.
 
 ## TexRenderable
 
@@ -164,10 +167,14 @@ Import the native backend explicitly. The package root of
 loads during the first native render:
 
 ```ts
-import { NativeTexBackend } from "@simonklee/opentui-tex-native";
+import { NativeTexBackend } from "@simonklee/opentui-tex/native";
 
 const backend = new NativeTexBackend();
 ```
+
+On Linux musl, set `OPENTUI_LIBC=musl` before starting the application so both
+OpenTUI and TeX select musl libraries. See [Native rendering](docs/native.md)
+for library overrides and standalone executables.
 
 MicroTeX parses a TeX-math dialect and computes glyph and rule positions.
 ZigTeX records SVG paths for the embedded glyph outlines from Latin Modern
@@ -218,7 +225,6 @@ You can develop the package without the native toolchain.
 bun run test
 bun run typecheck
 bun run build:package
-bun run build:loader
 ```
 
 Native builds require Zig 0.16.0 and `curl`. Use this command to test a native
@@ -227,3 +233,6 @@ build:
 ```sh
 bun run test:native
 ```
+
+For npm authentication, release checks, and publishing, see
+[Releasing](docs/releasing.md).

@@ -1,4 +1,4 @@
-import type { TexBackend, TexRenderOutput, TexRenderRequest } from "@simonklee/opentui-tex"
+import type { TexBackend, TexRenderOutput, TexRenderRequest } from "../backend.js"
 import { NativeTexRenderer } from "./native-renderer.js"
 
 export class NativeTexBackend implements TexBackend {

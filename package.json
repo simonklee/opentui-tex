@@ -1,15 +1,9 @@
 {
   "name": "@simonklee/opentui-tex",
-  "version": "0.1.0",
-  "description": "TeX renderable and Unicode math backend for OpenTUI",
+  "version": "0.2.0",
+  "description": "TeX renderable with Unicode and native image backends for OpenTUI",
   "license": "MIT",
   "packageManager": "bun@1.3.14",
-  "workspaces": [
-    "packages/*"
-  ],
-  "overrides": {
-    "@simonklee/opentui-tex": "."
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/simonklee/opentui-tex.git"
@@ -19,11 +13,12 @@
   },
   "homepage": "https://github.com/simonklee/opentui-tex#readme",
   "type": "module",
+  "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist/*.js",
-    "dist/*.d.ts",
+    "dist",
+    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -31,6 +26,11 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "bun": "./dist/native.bun.js",
+      "import": "./dist/native.js"
     },
     "./react": {
       "types": "./dist/react.d.ts",
@@ -42,31 +42,31 @@
     }
   },
   "scripts": {
-    "build": "bun run build:native && bun run build:package && bun run build:loader",
+    "build": "bun run build:native && bun run build:package",
     "build:package": "bun scripts/build-package.ts",
-    "build:loader": "bun run build:package && bun --cwd packages/latex-native build",
     "build:demo": "bun build demo/app.ts --outdir dist --target bun --packages external",
     "build:demo:node": "bun build demo/app.ts --outfile dist/app.node.js --target node --packages external",
     "build:native": "bash scripts/build-native",
     "build:native:all": "bash scripts/build-native --all",
-    "build:release": "bun run build:loader && bun run build:native:all && bun scripts/package-release.ts",
+    "build:release": "bun run build:package && bun run build:native:all && bun scripts/package-release.ts",
     "dev": "bun demo/app.ts",
     "start": "bun demo/app.ts",
     "start:node": "bun run build:demo:node && node --permission --allow-fs-read=.. --allow-child-process --allow-worker --allow-ffi --experimental-ffi dist/app.node.js",
     "test": "bun test src/document.test.ts src/tex-renderable.test.ts src/unicode-tex-backend.test.ts",
-    "test:native": "bun run build:native && bun run test:native:zig && bun --cwd packages/latex-native test",
+    "test:native": "bun run build:native && bun run test:native:zig && bun test src/native",
     "test:native:zig": "bash scripts/bootstrap-native && zig build test",
     "test:release": "bun scripts/test-release.ts",
     "test:all": "bun run test && bun run test:native",
-    "release:check": "bun run typecheck && bun run test:all && bun run build:package && bun run build:loader && bun run build:native:all && bun scripts/publish-packages.ts --dry-run",
+    "release:check": "bun run typecheck && bun run test:all && bun run build:release && bun run test:release && bun scripts/publish-packages.ts --dry-run",
     "publish:packages": "bun scripts/publish-packages.ts",
-    "typecheck": "tsc --noEmit && bun --cwd packages/latex-native typecheck"
+    "typecheck": "tsc --noEmit",
+    "version": "bun scripts/version.ts && bun install --lockfile-only"
   },
   "dependencies": {
-    "@opentui/core": "0.0.0-20260812-1d34234c",
     "string-width": "7.2.0"
   },
   "peerDependencies": {
+    "@opentui/core": "0.0.0-20260812-1d34234c",
     "@opentui/react": "0.0.0-20260812-1d34234c",
     "@opentui/solid": "0.0.0-20260812-1d34234c"
   },
@@ -75,15 +75,29 @@
     "@opentui/solid": { "optional": true }
   },
   "devDependencies": {
-    "@simonklee/opentui-tex-native": "workspace:*",
+    "@opentui/core": "0.0.0-20260812-1d34234c",
     "@opentui/react": "0.0.0-20260812-1d34234c",
     "@opentui/solid": "0.0.0-20260812-1d34234c",
     "@types/bun": "latest",
     "@types/node": "^24.0.0",
     "typescript": "^5"
   },
+  "optionalDependencies": {
+    "@simonklee/opentui-tex-native-darwin-arm64": "0.2.0",
+    "@simonklee/opentui-tex-native-darwin-x64": "0.2.0",
+    "@simonklee/opentui-tex-native-linux-arm64": "0.2.0",
+    "@simonklee/opentui-tex-native-linux-arm64-musl": "0.2.0",
+    "@simonklee/opentui-tex-native-linux-x64": "0.2.0",
+    "@simonklee/opentui-tex-native-linux-x64-musl": "0.2.0",
+    "@simonklee/opentui-tex-native-win32-arm64": "0.2.0",
+    "@simonklee/opentui-tex-native-win32-x64": "0.2.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "bun": ">=1.3.0",
-    "node": ">=26.1.0"
+    "node": ">=26.4.0"
   }
 }

@@ -1,6 +1,3 @@
-import { existsSync } from "node:fs"
-import { fileURLToPath } from "node:url"
-
 function packagePath(loaded: string | { default: string }): string {
   return typeof loaded === "string" ? loaded : loaded.default
 }
@@ -18,10 +15,6 @@ export async function resolveNativeLibrary(): Promise<string> {
   if (process.env.OPENTUI_LATEX_NATIVE_PATH) return process.env.OPENTUI_LATEX_NATIVE_PATH
   const abi = process.platform === "linux" ? linuxLibc() : undefined
   const suffix = `${process.platform}-${process.arch}${abi === "musl" ? "-musl" : ""}`
-  const library = process.platform === "win32" ? "tex_renderer.dll" : process.platform === "darwin" ? "libtex_renderer.dylib" : "libtex_renderer.so"
-  const bundled = fileURLToPath(new URL(`../native/${suffix}/${library}`, import.meta.url))
-  if (existsSync(bundled)) return bundled
-
   if (suffix === "darwin-x64") return packagePath(await import("@simonklee/opentui-tex-native-darwin-x64" as string))
   if (suffix === "darwin-arm64") return packagePath(await import("@simonklee/opentui-tex-native-darwin-arm64" as string))
   if (suffix === "win32-x64") return packagePath(await import("@simonklee/opentui-tex-native-win32-x64" as string))

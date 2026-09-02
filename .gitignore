@@ -1,6 +1,5 @@
 node_modules/
 dist/
-packages/*/dist/
 native/vendor/
 zig-out/
 .zig-cache/

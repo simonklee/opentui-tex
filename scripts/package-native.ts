@@ -6,6 +6,11 @@ interface Manifest {
   name: string
   version: string
   license?: string
+  repository: { type: string; url: string }
+  homepage: string
+  bugs: { url: string }
+  publishConfig: { access: string; registry: string }
+  optionalDependencies: Record<string, string>
 }
 
 interface Variant {
@@ -36,11 +41,15 @@ if ((!all && args.length !== 0 && !(args.length === 2 && targetIndex === 0)) || 
 }
 
 const rootManifest = readManifest("package.json")
-const loaderManifestPath = "packages/latex-native/package.json"
-if (!existsSync(loaderManifestPath)) throw new Error(`Required native loader manifest is missing: ${loaderManifestPath}`)
-const loaderManifest = readManifest(loaderManifestPath)
-if (!rootManifest.license || !loaderManifest.license) throw new Error("Portable and native loader manifests must declare a license")
-if (rootManifest.version !== loaderManifest.version) throw new Error("Portable and native loader package versions differ")
+if (!rootManifest.license) throw new Error("The package manifest must declare a license")
+const nativeName = `${rootManifest.name}-native`
+const metadata = {
+  version: rootManifest.version,
+  repository: rootManifest.repository,
+  homepage: rootManifest.homepage,
+  bugs: rootManifest.bugs,
+  publishConfig: rootManifest.publishConfig,
+}
 
 const selected = all
   ? variants
@@ -59,7 +68,7 @@ const licenses = [
 ] as const
 for (const [source] of licenses) requireFile(source, "license")
 
-const sourcePackageName = `${loaderManifest.name}-source`
+const sourcePackageName = `${nativeName}-source`
 const sourcePackageDir = join("node_modules", sourcePackageName)
 rmSync(sourcePackageDir, { recursive: true, force: true })
 mkdirSync(join(sourcePackageDir, "scripts"), { recursive: true })
@@ -70,8 +79,8 @@ copyFileSync("scripts/bootstrap-native", join(sourcePackageDir, "scripts", "boot
 cpSync("native", join(sourcePackageDir, "native"), { recursive: true })
 writeFileSync(join(sourcePackageDir, "package.json"), `${JSON.stringify({
   name: sourcePackageName,
-  version: loaderManifest.version,
-  description: `Complete corresponding source for ${loaderManifest.name} native binaries`,
+  ...metadata,
+  description: `Complete corresponding source for ${rootManifest.name} native binaries`,
   license: "GPL-3.0-only",
   files: ["build.zig", "build.zig.zon", "native", "scripts", "LICENSE", "LICENSE-PROJECT", "README.md"],
 }, null, 2)}\n`)
@@ -79,7 +88,10 @@ writeFileSync(join(sourcePackageDir, "README.md"), `# ${sourcePackageName}\n\nCo
 
 for (const variant of selected) {
   const suffix = `${variant.platform}-${variant.arch}${variant.abi ? `-${variant.abi}` : ""}`
-  const packageName = `${loaderManifest.name}-${suffix}`
+  const packageName = `${nativeName}-${suffix}`
+  if (rootManifest.optionalDependencies[packageName] !== rootManifest.version) {
+    throw new Error(`Native dependency version mismatch: ${packageName}`)
+  }
   const packageDir = join("node_modules", packageName)
   const artifact = join("zig-out", "lib", variant.output, variant.library)
   requireFile(artifact, "selected native artifact")
@@ -92,8 +104,8 @@ for (const variant of selected) {
   writeFileSync(join(packageDir, "index.d.ts"), "declare const path: string\nexport default path\n")
   writeFileSync(join(packageDir, "package.json"), `${JSON.stringify({
     name: packageName,
-    version: loaderManifest.version,
-    description: `Prebuilt ${suffix} native renderer for ${loaderManifest.name}`,
+    ...metadata,
+    description: `Prebuilt ${suffix} native renderer for ${rootManifest.name}`,
     type: "module",
     main: "./index.js",
     module: "./index.js",
@@ -101,10 +113,10 @@ for (const variant of selected) {
     exports: { ".": { types: "./index.d.ts", bun: "./index.bun.js", import: "./index.js" } },
     os: [variant.platform],
     cpu: [variant.arch],
-    ...(variant.abi ? { libc: [variant.abi] } : {}),
+    ...(variant.platform === "linux" ? { libc: [variant.abi ?? "glibc"] } : {}),
     license: "GPL-3.0-only",
   }, null, 2)}\n`)
-  writeFileSync(join(packageDir, "README.md"), `# ${packageName}\n\nPrebuilt ${suffix} native renderer for \`${loaderManifest.name}\`. Complete corresponding source is published as \`${sourcePackageName}@${loaderManifest.version}\`.\n`)
+  writeFileSync(join(packageDir, "README.md"), `# ${packageName}\n\nPrebuilt ${suffix} native renderer for \`${rootManifest.name}\`. Complete corresponding source is published as \`${sourcePackageName}@${rootManifest.version}\`.\n`)
   for (const [source, destination] of licenses) copyFileSync(source, join(packageDir, destination))
   console.log(`Packaged ${packageName}`)
 }

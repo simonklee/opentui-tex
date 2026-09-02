@@ -8,7 +8,7 @@
     "baseUrl": ".",
     "paths": {
       "@simonklee/opentui-tex": ["src/index.ts"],
-      "@simonklee/opentui-tex-native": ["packages/latex-native/src/index.ts"]
+      "@simonklee/opentui-tex/native": ["src/native.ts"]
     },
     "verbatimModuleSyntax": true,
     "noEmit": true,

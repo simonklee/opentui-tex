@@ -459,7 +459,7 @@ export class LatexApp {
     this.switchingBackend = true
     try {
       if (!this.nativeTexBackend) {
-        const { NativeTexBackend } = await import("@simonklee/opentui-tex-native")
+        const { NativeTexBackend } = await import("@simonklee/opentui-tex/native")
         if (this.shuttingDown) return
         this.nativeTexBackend = new NativeTexBackend()
       }

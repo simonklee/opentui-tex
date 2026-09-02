@@ -5,7 +5,7 @@
 
 import { appendFileSync, writeFileSync } from "node:fs"
 import { createCliRenderer, type KeyEvent, NativeImage } from "@opentui/core"
-import { NativeTexRenderer } from "@simonklee/opentui-tex-native"
+import { NativeTexRenderer } from "@simonklee/opentui-tex/native"
 import { TexRenderable } from "../src/index.js"
 import { resolveTheme } from "../src/theme.js"
 import { LatexApp } from "./app.js"

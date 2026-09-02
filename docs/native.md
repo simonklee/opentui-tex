@@ -1,9 +1,9 @@
-# @simonklee/opentui-tex-native
+# Native rendering
 
-Optional native TeX backend for `@simonklee/opentui-tex`.
+The native TeX backend is part of `@simonklee/opentui-tex`.
 
 ```ts
-import { NativeTexBackend } from "@simonklee/opentui-tex-native"
+import { NativeTexBackend } from "@simonklee/opentui-tex/native"
 ```
 
 `NativeTexRenderer.renderAsync()` returns an owned OpenTUI `NativeImage`. The
