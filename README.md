@@ -93,6 +93,8 @@ Options beyond `BoxOptions`:
 - `widthMax`, `heightMax`: output limits in cells. The defaults are 80 and 24.
 - `fallback`: behavior after a failure. The default is `"message"`.
 - `streaming`: preview updates for incomplete input. The default is `false`.
+- `strict`: reject unsupported Unicode commands and delimiters instead of showing
+  their names as text. This also applies to previews. The default is `false`.
 - `imageOptions`: options for the installed `ImageRenderable`.
 - `onError`: receives backend errors.
 
@@ -160,10 +162,32 @@ an `ImageRenderable`.
 
 `UnicodeTexBackend` parses a bounded subset of TeX math into an abstract syntax
 tree (AST). It lays out fractions, roots, scripts, accents, aligned equations,
-matrices, and cases as two-dimensional terminal cells. The output remains
-selectable terminal text. `string-width` measures the output. The backend is
-stateless and synchronous, and `renderSync` is public. It needs no cache or
-explicit destruction.
+matrices, cases, and annotated braces as two-dimensional terminal cells. Arrays
+honor `l`, `c`, `r`, and vertical rules; continued fractions accept `[l]` and `[r]`.
+Font commands preserve bold and italic attributes or select Unicode mathematical
+alphabets. The output remains selectable terminal text. `string-width` measures
+the output. The backend is stateless and synchronous, and `renderSync` is public.
+It needs no cache or explicit destruction.
+
+Use `strict: true` when you need to distinguish supported math from source that
+should remain unrendered:
+
+```ts
+const output = new UnicodeTexBackend().renderSync({
+  formula: String.raw`\mathbb{R} + \mathbf{x}`,
+  display: true,
+  foreground: "#ffffff",
+  background: "#000000",
+  widthMax: 80,
+  heightMax: 24,
+  strict: true,
+  signal: new AbortController().signal,
+});
+```
+
+The Unicode backend accepts at most 4,096 UTF-8 source bytes and limits each
+layout box to 16,384 cells before clipping. It does not compile LaTeX documents
+or load user-defined TeX packages.
 
 ### Images
 
@@ -211,8 +235,12 @@ interface TexBackend {
 ```
 
 The request contains `formula`, `display`, `foreground`, `background`,
-`widthMax`, `heightMax`, and an `AbortSignal`. The output is either
+`widthMax`, `heightMax`, an `AbortSignal`, and optional `strict` validation for
+Unicode math. The output is either
 `{ kind: "image", image }` or `{ kind: "unicode", text, columns, rows }`.
+Unicode output can also include `spans`, an array of `{ text, color?, bold?, italic? }`
+objects. Their text concatenates to `text`; `TexRenderable` uses them to preserve
+styling. Plain-text consumers can continue to read `text`.
 
 ## Node
 

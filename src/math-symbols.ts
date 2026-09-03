@@ -10,11 +10,15 @@ const ordinary: Record<string, string> = {
   Pi: "Π", Sigma: "Σ", Upsilon: "Υ", Phi: "Φ", Psi: "Ψ", Omega: "Ω", infty: "∞", partial: "∂", nabla: "∇",
   emptyset: "∅", varnothing: "∅", forall: "∀", exists: "∃", neg: "¬", angle: "∠", degree: "°", prime: "′",
   hbar: "ℏ", ell: "ℓ", Re: "ℜ", Im: "ℑ", aleph: "ℵ", top: "⊤", bot: "⊥", checkmark: "✓",
+  imath: "ı", jmath: "ȷ", beth: "ℶ", gimel: "ℷ", daleth: "ℸ", measuredangle: "∡", triangle: "△",
+  square: "□", lozenge: "◊", nexists: "∄", lnot: "¬", backprime: "‵", clubsuit: "♣", diamondsuit: "♢",
+  heartsuit: "♡", spadesuit: "♠",
 }
 const binary: Record<string, string> = {
   pm: "±", mp: "∓", times: "×", div: "÷", cdot: "·", ast: "∗", star: "⋆", circ: "∘", bullet: "•",
   oplus: "⊕", ominus: "⊖", otimes: "⊗", oslash: "⊘", odot: "⊙", cap: "∩", cup: "∪", land: "∧", wedge: "∧",
-  lor: "∨", vee: "∨", setminus: "∖",
+  lor: "∨", vee: "∨", setminus: "∖", uplus: "⊎", sqcap: "⊓", sqcup: "⊔", wr: "≀", diamond: "⋄",
+  bigtriangleup: "△", bigtriangledown: "▽", triangleleft: "◁", triangleright: "▷",
 }
 const relation: Record<string, string> = {
   ne: "≠", neq: "≠", equiv: "≡", approx: "≈", sim: "∼", simeq: "≃", cong: "≅", propto: "∝", le: "≤",
@@ -23,6 +27,12 @@ const relation: Record<string, string> = {
   leftarrow: "←", gets: "←", rightarrow: "→", to: "→", leftrightarrow: "↔", Leftarrow: "⇐", Rightarrow: "⇒",
   Leftrightarrow: "⇔", mapsto: "↦", longleftarrow: "⟵", longrightarrow: "⟶", longleftrightarrow: "⟷",
   uparrow: "↑", downarrow: "↓", updownarrow: "↕",
+  equals: "=", asymp: "≍", lt: "<", gt: ">", prec: "≺", succ: "≻", preceq: "⪯", succeq: "⪰",
+  sqsubset: "⊏", sqsupset: "⊐", sqsubseteq: "⊑", sqsupseteq: "⊒", owns: "∋", dashv: "⊣", mid: "∣",
+  smile: "⌣", frown: "⌢", hookleftarrow: "↩", hookrightarrow: "↪", leftharpoonup: "↼", leftharpoondown: "↽",
+  rightharpoonup: "⇀", rightharpoondown: "⇁", rightleftharpoons: "⇌", Longleftarrow: "⟸", Longrightarrow: "⟹",
+  Longleftrightarrow: "⟺", longmapsto: "⟼", Uparrow: "⇑", Downarrow: "⇓", Updownarrow: "⇕", nearrow: "↗",
+  searrow: "↘", swarrow: "↙", nwarrow: "↖",
 }
 const punctuation: Record<string, string> = { ldots: "…", dots: "…", cdots: "⋯", vdots: "⋮", ddots: "⋱", colon: ":" }
 
@@ -37,15 +47,20 @@ export const symbols: Readonly<Record<string, SymbolDefinition>> = {
 
 export const operators: Readonly<Record<string, string>> = {
   sum: "∑", prod: "∏", coprod: "∐", int: "∫", iint: "∬", iiint: "∭", oint: "∮",
-  bigcap: "⋂", bigcup: "⋃", bigvee: "⋁", bigwedge: "⋀",
+  bigcap: "⋂", bigcup: "⋃", bigvee: "⋁", bigwedge: "⋀", bigoplus: "⨁", bigotimes: "⨂", bigodot: "⨀",
 }
 
-export const namedOperators = new Set(["sin", "cos", "tan", "log", "ln", "exp", "lim", "min", "max", "sup", "inf", "det", "gcd", "ker"])
+export const namedOperators = new Set([
+  "arccos", "arcsin", "arctan", "arg", "cos", "cosh", "cot", "coth", "csc", "deg", "det", "dim", "exp",
+  "gcd", "hom", "inf", "ker", "lg", "lim", "liminf", "limsup", "ln", "log", "max", "min", "mod", "Pr",
+  "sec", "sin", "sinh", "sup", "tan", "tanh",
+])
 
 export const delimiters: Readonly<Record<string, string>> = {
   "(": "(", ")": ")", "[": "[", "]": "]", "{": "{", "}": "}", "|": "│", "\\|": "║",
   lbrace: "{", rbrace: "}", vert: "│", Vert: "║", langle: "⟨", rangle: "⟩", lfloor: "⌊", rfloor: "⌋",
-  lceil: "⌈", rceil: "⌉", ".": "",
+  lceil: "⌈", rceil: "⌉", lvert: "│", rvert: "│", lVert: "║", rVert: "║", "\\{": "{", "\\}": "}",
+  "/": "/", "<": "<", ">": ">", backslash: "\\", ".": "",
 }
 
 export const accents: Readonly<Record<string, AccentKind>> = {

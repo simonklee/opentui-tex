@@ -52,7 +52,7 @@
     "dev": "bun demo/app.ts",
     "start": "bun demo/app.ts",
     "start:node": "bun run build:demo:node && node --permission --allow-fs-read=.. --allow-child-process --allow-worker --allow-ffi --experimental-ffi dist/app.node.js",
-    "test": "bun test src/document.test.ts src/tex-renderable.test.ts src/unicode-tex-backend.test.ts scripts/release.test.ts",
+    "test": "bun test src/document.test.ts src/tex-renderable.test.ts src/unicode-tex-backend.test.ts src/math-parser.test.ts src/math-layout.test.ts scripts/release.test.ts",
     "test:native": "bun run build:native && bun run test:native:zig && bun test src/native",
     "test:native:zig": "bash scripts/bootstrap-native && zig build test",
     "test:release": "bun scripts/test-release.ts",

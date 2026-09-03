@@ -6,6 +6,9 @@ import {
   type NativeImage,
   type RenderContext,
   TextRenderable,
+  StyledText,
+  createTextAttributes,
+  parseColor,
   Yoga,
 } from "@opentui/core"
 import stringWidth from "string-width"
@@ -35,6 +38,7 @@ export interface TexRenderableOptions extends BoxOptions {
   imageOptions?: Omit<ImageRenderableOptions, "source" | "width" | "height">
   onError?: (error: unknown) => void
   streaming?: boolean
+  strict?: boolean
 }
 
 export interface TexDimensions {
@@ -75,6 +79,7 @@ export class TexRenderable extends BoxRenderable {
   ready: Promise<void>
   private readonly backend: TexBackend
   private readonly fallback: TexFallback
+  private readonly strict: boolean
   private readonly widthMax: number
   private readonly heightMax: number
   private autoWidth: boolean
@@ -104,6 +109,7 @@ export class TexRenderable extends BoxRenderable {
       imageOptions,
       onError,
       streaming = false,
+      strict = false,
       ...boxOptions
     } = options
     super(context, {
@@ -120,6 +126,7 @@ export class TexRenderable extends BoxRenderable {
     this._display = display
     this.backend = backend
     this.fallback = fallback
+    this.strict = strict
     this.widthMax = dimensionMax(widthMax)
     this.heightMax = dimensionMax(heightMax)
     this.autoWidth = options.width == null || options.width === "auto"
@@ -265,9 +272,14 @@ export class TexRenderable extends BoxRenderable {
       widthMax: this.widthMax,
       heightMax: this.heightMax,
       signal: controller.signal,
+      strict: this.strict,
     }
     if (this._streaming) {
-      this.applyOutput(this.previewOutput(request))
+      try {
+        this.applyOutput(this.previewOutput(request))
+      } catch {
+        this.applyOutput(rawSourceOutput(formula, this.widthMax, this.heightMax))
+      }
       return
     }
     let unicodeOutput: TexRenderOutput | null = null
@@ -276,8 +288,9 @@ export class TexRenderable extends BoxRenderable {
       && this.backend.renderSync === UNICODE_RENDER_SYNC ? this.backend : null
     if (!synchronousBackend) {
       try {
-        unicodeOutput = DEFAULT_PREVIEW_BACKEND.renderSync(request)
-        this.applyOutput(unicodeOutput)
+        const preview = DEFAULT_PREVIEW_BACKEND.renderSync(request)
+        this.applyOutput(preview)
+        unicodeOutput = preview
       } catch {
         // The primary backend may support input outside the Unicode subset.
       }
@@ -345,7 +358,12 @@ export class TexRenderable extends BoxRenderable {
     const child = output.kind === "image"
       ? this.createImageChild(output.image, dimensions)
       : new TextRenderable(this._ctx, {
-          content: output.text,
+          content: output.spans ? new StyledText(output.spans.map((span) => ({
+            __isChunk: true as const,
+            text: span.text,
+            fg: span.color === undefined ? undefined : parseColor(span.color),
+            attributes: createTextAttributes({ bold: span.bold, italic: span.italic }),
+          }))) : output.text,
           fg: this._foreground,
           bg: this._background,
           wrapMode: "none",

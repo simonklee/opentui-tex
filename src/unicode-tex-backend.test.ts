@@ -223,7 +223,7 @@ describe("UnicodeTexBackend", () => {
     expect(() => renderIncomplete(String.raw`\not}`)).toThrow("Unexpected closing TeX group")
     expect(() => renderIncomplete(String.raw`\left(x\right}`)).toThrow("Unexpected closing TeX group")
     expect(() => renderIncomplete(String.raw`\end{matrix}`)).toThrow("Unexpected \\end")
-    expect(() => renderIncomplete(String.raw`\begin{matrix}1&&2`)).toThrow("Unexpected token")
+    expect(renderIncomplete(String.raw`\begin{matrix}1&&2`)).toBe("1  2")
     expect(() => renderIncomplete(String.raw`\begin{matrix}1\end{pmatrix}`)).toThrow("Unexpected token")
     expect(() => renderIncomplete(String.raw`\begin{unknown}x`)).toThrow("Unsupported TeX environment")
     expect(() => render(String.raw`\frac`)).toThrow("Expected a TeX argument")
@@ -243,5 +243,75 @@ describe("UnicodeTexBackend", () => {
     expect(renderIncomplete(String.raw`x^\displaystyle`)).toBe(" □\nx")
     expect(() => render(String.raw`\sqrt[\frac{1}{2}`)).toThrow('Expected "]"')
     expect(() => render(String.raw`x^\displaystyle`)).toThrow("Expected a TeX argument")
+  })
+
+  test.each([
+    ["x % comment\n+y", "x + y"],
+    [String.raw`\begin{aligned}&=x\\&=y\end{aligned}`, "  = x\n  = y"],
+    [String.raw`\cfrac[l]{1}{12345}`, " 1\n───────\n 12345"],
+    [String.raw`\cfrac[r]{1}{12345}`, "     1\n───────\n 12345"],
+    [String.raw`\mathbb{R}+\mathcal{F}`, "ℝ + ℱ"],
+    [String.raw`\arctan x`, "arctan x"],
+    [String.raw`x\pmod{n}`, "x (mod n)"],
+    [String.raw`\operatorname{arg\,max} x`, "arg max x"],
+    [String.raw`\displaylines{x=1\\y=2}`, "x = 1\ny = 2"],
+    [String.raw`\begin{array}{l|r}a&wide\\long&b\end{array}`, "a    │ wide\nlong │    b"],
+  ])("renders compatible math: %s", (source, expected) => {
+    expect(render(source, true)).toBe(expected)
+  })
+
+  test("preserves styled output without changing its plain text representation", () => {
+    const output = backend.renderSync({
+      formula: String.raw`\mathbf{x+\mathit{y}}+\textcolor{red}{z}`,
+      display: true, foreground: "#ffffff", background: "#000000", widthMax: 80, heightMax: 24,
+      signal: new AbortController().signal,
+    })
+    expect(output.text).toBe("x + y + z")
+    expect(output.spans?.map((span) => span.text).join("")).toBe(output.text)
+    expect(output.spans).toContainEqual(expect.objectContaining({ text: "y", bold: true, italic: true }))
+    expect(output.spans).toContainEqual(expect.objectContaining({ text: "z", color: "red" }))
+  })
+
+  test("keeps operator spacing and limit placement through font and color wrappers", () => {
+    for (const display of [false, true]) {
+      expect(render(String.raw`\mathbf{\sum}\limits_1^2`, display)).toBe("2\n∑\n1")
+      expect(render(String.raw`\textcolor{red}{\sum}\nolimits_1^2`, display)).toBe("∑²₁")
+      expect(render(String.raw`\mathbf{\sum}_1^2`, display)).toBe(display ? "2\n∑\n1" : "∑²₁")
+      expect(render(String.raw`\mathbf{\sin}x`, display)).toBe("sin x")
+      expect(render(String.raw`\mathbf{\underbrace{abcd}}_{n}`, display)).toBe("abcd\n╰┬─╯\n n")
+      expect(render(String.raw`\mathbf{\sum_1^2}\nolimits`, display)).toBe("∑²₁")
+      expect(render(String.raw`\textcolor{red}{\mathbf{\sum_1^2}}\limits`, display)).toBe("2\n∑\n1")
+      for (const source of [
+        String.raw`\mathbf{\sum_1}\limits^2`,
+        String.raw`\mathbf{\sum^2}\limits_1`,
+        String.raw`\textcolor{red}{\sum_1}\limits^2`,
+      ]) {
+        expect(render(source, display, 1)).toBe("2\n∑\n1")
+        expect(renderIncomplete(source)).toBe("2\n∑\n1")
+      }
+    }
+  })
+
+  test.each([
+    [String.raw`a\not\mathbf{=}b`, "a ≠ b"],
+    [String.raw`x\not\mathrm{\in}S`, "x ∉ S"],
+    [String.raw`\not\textcolor{red}{\mathit{\subseteq}}`, "⊈"],
+    ["\\mathbf{x}\u0305", "x\u0305"],
+    ["\\mathrm{x}\u20d7", "x\u20d7"],
+    ["\\textcolor{red}{\\mathit{x}}\u0305", "x\u0305"],
+  ])("preserves styled atom semantics: %s", (source, expected) => {
+    expect(render(source)).toBe(expected)
+    expect(renderIncomplete(source)).toBe(expected)
+  })
+
+  test("strict rendering rejects unsupported syntax while the default remains permissive", () => {
+    const request = {
+      formula: String.raw`\unknown{x}`, display: true, foreground: "", background: "",
+      widthMax: 80, heightMax: 24, signal: new AbortController().signal,
+    }
+    expect(backend.renderSync(request).text).toBe(String.raw`\unknownx`)
+    expect(() => backend.renderSync({ ...request, strict: true })).toThrow("Unsupported")
+    expect(() => renderIncompleteUnicode({ ...request, strict: true })).toThrow("Unsupported")
+    expect(() => backend.renderSync({ ...request, formula: String.raw`\left\unknown x\right)`, strict: true })).toThrow("Unsupported")
   })
 })

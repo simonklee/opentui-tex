@@ -1,5 +1,5 @@
 import type { TexBackend, TexRenderOutput, TexRenderRequest } from "./backend.js"
-import { boxToString, layoutMath } from "./math-layout.js"
+import { boxToOutput, layoutMath } from "./math-layout.js"
 import { parseMath, parseMathIncomplete } from "./math-parser.js"
 import stringWidth from "string-width"
 
@@ -33,15 +33,16 @@ function renderUnicode(request: TexRenderRequest, incomplete: boolean): UnicodeT
 
   const widthMax = Math.floor(request.widthMax)
   const heightMax = Math.floor(request.heightMax)
-  const node = incomplete ? parseMathIncomplete(request.formula) : parseMath(request.formula)
-  const text = boxToString(layoutMath(node, request.display), widthMax, heightMax)
+  const options = { strict: request.strict }
+  const node = incomplete ? parseMathIncomplete(request.formula, options) : parseMath(request.formula, options)
+  const output = boxToOutput(layoutMath(node, request.display), widthMax, heightMax)
   assertNotAborted(request.signal)
-  if (!text) throw new Error("TeX formula produced no Unicode output")
-  if (text.length > OUTPUT_LENGTH_MAX) throw new Error(`Unicode TeX output exceeds ${OUTPUT_LENGTH_MAX} characters`)
-  const lines = text.split("\n")
+  if (!output.text) throw new Error("TeX formula produced no Unicode output")
+  if (output.text.length > OUTPUT_LENGTH_MAX) throw new Error(`Unicode TeX output exceeds ${OUTPUT_LENGTH_MAX} characters`)
+  const lines = output.text.split("\n")
   return {
     kind: "unicode",
-    text,
+    ...output,
     columns: Math.max(1, ...lines.map((line) => stringWidth(line))),
     rows: lines.length,
   }

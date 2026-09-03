@@ -1,4 +1,4 @@
-import type { MathEnvironment, MathNode, SymbolRole } from "./math-types.js"
+import type { MathEnvironment, MathNode, MathVariant, SymbolRole } from "./math-types.js"
 import { accents, delimiters, namedOperators, operators, spacing, symbols } from "./math-symbols.js"
 import { graphemeSegmenter } from "./math-graphemes.js"
 
@@ -9,12 +9,20 @@ const environments = new Set<MathEnvironment>([
   "gathered", "gather", "smallmatrix", "array",
 ])
 
-export function parseMath(source: string): MathNode {
-  return new Parser(source).parse()
+const variants: Readonly<Record<string, MathVariant>> = {
+  mathrm: "normal", textrm: "normal", mathnormal: "normal", mathbf: "bold", boldsymbol: "bold", bm: "bold",
+  mathit: "italic", mathsf: "sans", mathtt: "monospace", mathbb: "double-struck", mathcal: "script",
+  mathscr: "script", mathfrak: "fraktur",
 }
 
-export function parseMathIncomplete(source: string): MathNode {
-  return new Parser(source, true).parse()
+export interface MathParseOptions { strict?: boolean }
+
+export function parseMath(source: string, options: MathParseOptions = {}): MathNode {
+  return new Parser(source, false, options.strict ?? false).parse()
+}
+
+export function parseMathIncomplete(source: string, options: MathParseOptions = {}): MathNode {
+  return new Parser(source, true, options.strict ?? false).parse()
 }
 
 class Parser {
@@ -22,7 +30,7 @@ class Parser {
   private depth = 0
   private readonly graphemes: Intl.Segments
 
-  constructor(private readonly source: string, private readonly incomplete = false) {
+  constructor(private readonly source: string, private readonly incomplete: boolean, private readonly strict: boolean) {
     this.graphemes = graphemeSegmenter.segment(source)
   }
 
@@ -48,44 +56,49 @@ class Parser {
         else scripts.subscript = argument
         body.push(scripts)
       } else {
-        const atom = this.parseAtom(body.at(-1))
+        const atom = this.parseAtom(body.at(-1), stop)
         if (atom) body.push(atom)
       }
     }
     return body
   }
 
-  private parseAtom(previous?: MathNode): MathNode | undefined {
+  private parseAtom(previous?: MathNode, stop?: () => boolean): MathNode | undefined {
     this.depth++
     if (this.depth > MAX_NESTING_DEPTH) this.fail(`TeX nesting exceeds the ${MAX_NESTING_DEPTH}-level limit`)
     try {
       if (this.peek() === "{") return this.parseGroup()
       if (this.peek() === "\\") {
-        const atom = this.parseCommand(previous)
-        if (atom && "value" in atom) atom.value += this.readCombiningSuffix()
+        const atom = this.parseCommand(previous, stop)
+        const value = atom && unwrapStyle(atom)
+        if (value && "value" in value) value.value += this.readCombiningSuffix()
         return atom
       }
       if (this.peek() === "~") { this.offset++; return { type: "space", width: 1 } }
-      const part = this.graphemes.containing(this.offset)!
-      // Unicode prepend characters must not absorb TeX control tokens.
-      const literal = part.segment.slice(this.offset - part.index)
-      const boundary = literal.search(/[\\{}[\]^_~&\s]/u)
-      const value = boundary > 0 ? literal.slice(0, boundary) : literal
-      this.offset += value.length
+      const value = this.readLiteral()
       return { type: "symbol", value, role: inferRole(value[0]!) }
     } finally {
       this.depth--
     }
   }
 
-  private parseCommand(previous?: MathNode): MathNode | undefined {
+  private parseCommand(previous?: MathNode, stop?: () => boolean): MathNode | undefined {
     const start = this.offset
     const command = this.readCommand()
     if (command === "\\") return row([])
     if (command === "begin") return this.parseEnvironment()
     if (command === "end") this.fail("Unexpected \\end", start)
     if (["frac", "dfrac", "tfrac", "cfrac"].includes(command)) {
-      return { type: "fraction", numerator: this.parseArgument(), denominator: this.parseArgument(), bar: true }
+      this.skipWhitespace()
+      const alignment = command === "cfrac" && this.peek() === "[" ? /^\[([lr]?)(\]|$)/.exec(this.source.slice(this.offset)) : undefined
+      if (alignment === null || (alignment && !alignment[2] && (!this.incomplete || this.offset + alignment[0].length !== this.source.length))) {
+        this.fail("Unsupported \\cfrac alignment; expected [l], [r], or []")
+      }
+      if (alignment) this.offset += alignment[0].length
+      return {
+        type: "fraction", numerator: this.parseArgument(), denominator: this.parseArgument(), bar: true,
+        ...(alignment?.[1] ? { numeratorAlign: alignment[1] === "l" ? "left" : "right" } : {}),
+      }
     }
     if (["binom", "dbinom", "tbinom"].includes(command)) {
       return { type: "delimited", left: "(", body: { type: "fraction", numerator: this.parseArgument(), denominator: this.parseArgument(), bar: false }, right: ")" }
@@ -97,59 +110,85 @@ class Parser {
     if (command === "left") return this.parseLeftRight()
     if (command === "right") this.fail("Unexpected \\right", start)
     if (command === "middle") return { type: "symbol", value: this.readDelimiter() }
-    if (command in accents) return { type: "accent", accent: accents[command]!, body: this.parseArgument() }
-    if (["mathrm", "mathbf", "mathit", "mathsf", "mathtt", "mathbb", "mathcal", "mathfrak"].includes(command)) {
-      return this.parseArgument()
+    if (Object.hasOwn(accents, command)) return { type: "accent", accent: accents[command]!, body: this.parseArgument() }
+    if (Object.hasOwn(variants, command)) {
+      return { type: "variant", variant: variants[command]!, body: command === "textrm" ? { type: "text", value: this.readTextGroup() } : this.parseArgument() }
     }
-    if (["text", "textrm", "mbox"].includes(command)) {
-      return { type: "text", value: this.readRawGroup().replace(/\\([{}%#$&_])/g, "$1").replaceAll("~", " ") }
+    if (command === "text" || command === "mbox") return { type: "text", value: this.readTextGroup() }
+    if (command === "operatorname") {
+      const limits = this.peek() === "*"
+      if (limits) this.offset++
+      return { type: "operator", value: this.readTextGroup(), limits }
     }
-    if (command === "operatorname") return { type: "operator", value: this.readRawGroup(), limits: false }
     if (command === "overset" || command === "stackrel") {
       const over = this.parseArgument(); return { type: "overunder", over, base: this.parseArgument() }
     }
     if (command === "underset") {
       const under = this.parseArgument(); return { type: "overunder", under, base: this.parseArgument() }
     }
+    if (command === "overbrace" || command === "underbrace") {
+      return { type: "brace", body: this.parseArgument(), position: command === "overbrace" ? "over" : "under" }
+    }
+    if (command === "textcolor" || command === "color") {
+      const color = this.readRawGroup().value
+      return { type: "color", color, body: command === "textcolor" ? this.parseArgument() : row(this.parseRow(stop)) }
+    }
     if (command === "not") {
       const target = this.parseArgument()
-      if (target.type === "symbol") return { ...target, value: negate(target.value) }
+      const symbol = unwrapStyle(target)
+      if (symbol.type === "symbol") {
+        symbol.value = negate(symbol.value)
+        return target
+      }
       return { type: "row", body: [{ type: "symbol", value: "¬" }, target] }
     }
+    if (command === "pmod") {
+      return { type: "row", body: [{ type: "space", width: 1 }, { type: "text", value: "(mod " }, this.parseArgument(), { type: "text", value: ")" }] }
+    }
+    if (command === "mod" || command === "bmod") return { type: "operator", value: "mod", limits: false }
+    if (command === "displaylines") {
+      this.skipWhitespace()
+      if (this.incomplete && this.done()) return { type: "matrix", environment: "gathered", rows: [[placeholder()]] }
+      this.expect("{")
+      return this.parseMatrix("gathered", "}")
+    }
     if (command === "limits" || command === "nolimits") {
-      const base = previous?.type === "scripts" ? previous.base : previous
+      let base = previous
+      while (base?.type === "variant" || base?.type === "color" || base?.type === "scripts") {
+        base = base.type === "scripts" ? base.base : base.body
+      }
       if (base?.type === "operator") base.limits = command === "limits"
       return undefined
     }
     if (["displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle"].includes(command)) return undefined
     if (/^(?:big|Big|bigg|Bigg)[lrm]?$/.test(command)) return { type: "symbol", value: this.readDelimiter() }
-    if (command in spacing) return { type: "space", width: spacing[command]! }
-    if (command in symbols) return { type: "symbol", ...symbols[command]! }
-    if (command in operators) return { type: "operator", value: operators[command]!, limits: command.includes("int") ? false : "display" }
-    if (namedOperators.has(command)) return { type: "operator", value: command, limits: ["lim", "min", "max"].includes(command) ? "display" : false }
-    if (command in delimiters) return { type: "symbol", value: delimiters[`\\${command}`] ?? delimiters[command]! }
+    if (Object.hasOwn(spacing, command)) return { type: "space", width: spacing[command]! }
+    if (Object.hasOwn(symbols, command)) return { type: "symbol", ...symbols[command]! }
+    if (Object.hasOwn(operators, command)) return { type: "operator", value: operators[command]!, limits: command.includes("int") ? false : "display" }
+    if (namedOperators.has(command)) return { type: "operator", value: command, limits: command.startsWith("lim") || ["min", "max"].includes(command) ? "display" : false }
+    if (Object.hasOwn(delimiters, command)) return { type: "symbol", value: delimiters[`\\${command}`] ?? delimiters[command]! }
     if (["{", "}", "%", "#", "$", "&", "_", "backslash"].includes(command)) return { type: "symbol", value: command === "backslash" ? "\\" : command }
+    if (command === " ") return { type: "space", width: 1 }
+    if (this.strict) this.fail(`Unsupported command \\${command}`, start)
     return { type: "text", value: `\\${command}` }
   }
 
   private parseEnvironment(): MathNode {
-    const rawName = this.readRawGroup()
+    const rawName = this.readRawGroup().value
     const name = rawName.replace(/\*$/, "") as MathEnvironment
     if (!environments.has(name)) this.fail(`Unsupported TeX environment: ${rawName}`)
-    if (name === "array") { this.skipWhitespace(); if (this.peek() === "{") this.readRawGroup() }
+    return this.parseMatrix(name, `\\end{${rawName}}`, name === "array" ? this.readArrayColumns() : undefined)
+  }
+
+  private parseMatrix(environment: MathEnvironment, end: string, columns?: string): MathNode {
     const rows: MathNode[][] = []
     let cells: MathNode[] = []
     while (!this.done()) {
       this.skipWhitespace()
       if (this.done()) break
-      if (this.isEnd(rawName)) {
-        this.offset += `\\end{${rawName}}`.length
-        if (cells.length || !rows.length) rows.push(cells)
-        return { type: "matrix", rows, environment: name }
-      }
+      if (this.source.startsWith(end, this.offset) && !cells.length) break
       const start = this.offset
-      cells.push(row(this.parseRow(() => this.peek() === "&" || this.source.startsWith("\\\\", this.offset) || this.source.startsWith("\\end{", this.offset))))
-      if (this.offset === start) this.fail(`Unexpected token in ${rawName}`)
+      cells.push(row(this.parseRow(() => this.peek() === "&" || this.source.startsWith("\\\\", this.offset) || this.source.startsWith(end, this.offset) || this.isCommand("end"))))
       this.skipWhitespace()
       if (this.peek() === "&") {
         this.offset++
@@ -160,13 +199,24 @@ class Parser {
       if (this.source.startsWith("\\\\", this.offset)) {
         this.offset += 2; this.skipOptionalRowSpacing(); rows.push(cells); cells = []; continue
       }
+      if (this.source.startsWith(end, this.offset)) break
+      if (this.offset === start) this.fail(`Unexpected token in ${environment}`)
     }
-    if (this.incomplete) {
-      if (cells.length) rows.push(cells)
-      else if (!rows.length) rows.push([placeholder()])
-      return { type: "matrix", rows, environment: name }
+    const closed = this.source.startsWith(end, this.offset)
+    if (!closed && !(this.incomplete && this.done())) this.fail(`Unclosed TeX environment: ${environment}`)
+    if (closed) this.offset += end.length
+    if (!closed && !rows.length && !cells.length) cells.push(placeholder())
+    if (cells.length || !rows.length) rows.push(cells)
+    return { type: "matrix", rows, environment, ...(columns !== undefined ? { columns } : {}) }
+  }
+
+  private readArrayColumns(): string {
+    const group = this.readRawGroup()
+    const columns = group.value.replace(/\s/g, "")
+    if (/[^lcr|]/.test(columns) || (!/[lcr]/.test(columns) && group.closed)) {
+      this.fail("Unsupported array columns; expected l, c, r, and |")
     }
-    this.fail(`Unclosed TeX environment: ${rawName}`)
+    return columns
   }
 
   private parseLeftRight(): MathNode {
@@ -189,7 +239,7 @@ class Parser {
         this.fail("Expected a TeX argument")
       }
       if (this.peek() === "}") this.fail("Unexpected closing TeX group")
-      const argument = this.peek() === "{" ? this.parseGroup() : this.parseAtom()
+      const argument = this.parseAtom()
       if (argument) return argument
     }
   }
@@ -220,17 +270,41 @@ class Parser {
     return result
   }
 
-  private readRawGroup(): string {
-    this.skipWhitespace(); this.expect("{")
-    const start = this.offset
+  private readTextGroup(): string {
+    const group = this.readRawGroup(true)
+    return (group.value || (group.closed ? "" : "□"))
+      .replace(/\\([A-Za-z@]+|.)/g, (match, command: string) => {
+        if ("{}%#$&_ ".includes(command)) return command
+        if (command === "textbackslash") return "\\"
+        if (command === "!") return ""
+        if (Object.hasOwn(spacing, command)) return " ".repeat(Math.max(1, spacing[command]!))
+        return match
+      })
+      .replaceAll("~", " ")
+  }
+
+  private readRawGroup(preserveComments = false): { value: string; closed: boolean } {
+    this.skipWhitespace()
+    if (this.incomplete && this.done()) return { value: "", closed: false }
+    this.expect("{")
+    let start = this.offset
+    const parts: string[] = []
     let depth = 1
     while (!this.done()) {
       const char = this.source[this.offset++]!
+      if (char === "%" && !preserveComments && !this.escaped(this.offset - 1)) {
+        parts.push(this.source.slice(start, this.offset - 1))
+        while (!this.done() && !/[\r\n]/.test(this.peek())) this.offset++
+        if (this.peek() === "\r") this.offset++
+        if (this.peek() === "\n") this.offset++
+        start = this.offset
+        continue
+      }
       if (char === "{" && !this.escaped(this.offset - 1)) depth++
-      else if (char === "}" && !this.escaped(this.offset - 1) && --depth === 0) return this.source.slice(start, this.offset - 1)
+      else if (char === "}" && !this.escaped(this.offset - 1) && --depth === 0) return { value: parts.join("") + this.source.slice(start, this.offset - 1), closed: true }
       if (depth > MAX_NESTING_DEPTH) this.fail(`TeX nesting exceeds the ${MAX_NESTING_DEPTH}-level limit`)
     }
-    if (this.incomplete) return this.source.slice(start) || "□"
+    if (this.incomplete) return { value: parts.join("") + this.source.slice(start), closed: false }
     this.fail("Unclosed TeX group", start)
   }
 
@@ -253,11 +327,30 @@ class Parser {
     }
     if (this.peek() === "}") this.fail("Unexpected closing TeX group")
     if (this.peek() === "\\") {
+      const start = this.offset
       const command = this.readCommand()
-      return (delimiters[`\\${command}`] ?? delimiters[command] ?? command) + this.readCombiningSuffix()
+      if (Object.hasOwn(delimiters, command)) return (delimiters[`\\${command}`] ?? delimiters[command]!) + this.readCombiningSuffix()
+      if (this.incomplete && this.done() && this.offset === start + 1) return ""
+      if (this.strict) this.fail(`Unsupported delimiter \\${command}`, start)
+      return command + this.readCombiningSuffix()
     }
-    const token = this.source[this.offset++] ?? ""
-    return (delimiters[token] ?? token) + this.readCombiningSuffix()
+    const token = this.peek()
+    if (Object.hasOwn(delimiters, token)) {
+      this.offset++
+      return delimiters[token]! + this.readCombiningSuffix()
+    }
+    if (this.strict) this.fail(`Unsupported delimiter ${token}`)
+    return this.readLiteral()
+  }
+
+  private readLiteral(): string {
+    const part = this.graphemes.containing(this.offset)!
+    // Unicode prepend characters must not absorb TeX control tokens or comments.
+    const literal = part.segment.slice(this.offset - part.index)
+    const boundary = literal.search(/[\\{}[\]^_~&%\s]/u)
+    const value = boundary > 0 ? literal.slice(0, boundary) : literal
+    this.offset += value.length
+    return value
   }
 
   private readCombiningSuffix(): string {
@@ -274,12 +367,17 @@ class Parser {
     while (!this.done() && this.source[this.offset++] !== "]") {}
   }
 
-  private isEnd(name: string): boolean { return this.source.startsWith(`\\end{${name}}`, this.offset) }
   private isCommand(name: string): boolean {
     if (!this.source.startsWith(`\\${name}`, this.offset)) return false
     return !/[A-Za-z@]/.test(this.source[this.offset + name.length + 1] ?? "")
   }
-  private skipWhitespace(): void { while (/\s/.test(this.peek())) this.offset++ }
+  private skipWhitespace(): void {
+    while (!this.done()) {
+      if (/\s/.test(this.peek())) { this.offset++; continue }
+      if (this.peek() !== "%") return
+      while (!this.done() && !/[\r\n]/.test(this.peek())) this.offset++
+    }
+  }
   private done(): boolean { return this.offset >= this.source.length }
   private peek(): string { return this.source[this.offset] ?? "" }
   private expect(value: string): void { if (!this.source.startsWith(value, this.offset)) this.fail(`Expected "${value}"`); this.offset += value.length }
@@ -289,6 +387,11 @@ class Parser {
 
 function row(body: MathNode[]): MathNode { return body.length === 1 ? body[0]! : { type: "row", body } }
 function placeholder(): MathNode { return { type: "symbol", value: "□" } }
+
+function unwrapStyle(node: MathNode): MathNode {
+  while (node.type === "variant" || node.type === "color") node = node.body
+  return node
+}
 
 function inferRole(value: string): SymbolRole {
   if ("+-*/×÷±∓".includes(value)) return "binary"
@@ -300,5 +403,8 @@ function inferRole(value: string): SymbolRole {
 }
 
 function negate(value: string): string {
-  return ({ "=": "≠", "<": "≮", ">": "≯", "≤": "≰", "≥": "≱", "∈": "∉", "∋": "∌", "⊂": "⊄", "⊃": "⊅" } as Record<string, string>)[value] ?? `${value}̸`
+  return ({
+    "=": "≠", "<": "≮", ">": "≯", "≤": "≰", "≥": "≱", "∈": "∉", "∋": "∌", "⊂": "⊄", "⊃": "⊅",
+    "≡": "≢", "≈": "≉", "∼": "≁", "⊆": "⊈", "⊇": "⊉", "∣": "∤", "∥": "∦",
+  } as Record<string, string>)[value] ?? `${value}̸`
 }

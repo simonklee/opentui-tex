@@ -1,4 +1,4 @@
-import { BoxRenderable, ImageRenderable, NativeImage, ScrollBoxRenderable, TextRenderable } from "@opentui/core"
+import { BoxRenderable, ImageRenderable, NativeImage, ScrollBoxRenderable, TextAttributes, TextRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { describe, expect, spyOn, test } from "bun:test"
 import { BindingTexRenderable } from "./binding-tex-renderable.js"
@@ -29,6 +29,96 @@ describe("fitImageToPlacement", () => {
 })
 
 describe("TexRenderable", () => {
+  test("installs selectable styled Unicode through streaming and theme updates", async () => {
+    const output = await createTestRenderer({ width: 30, height: 5 })
+    try {
+      const tex = new TexRenderable(output.renderer, {
+        formula: String.raw`\mathbf{x+\mathit{y}}`,
+        foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+        streaming: true, strict: true,
+      })
+      output.renderer.root.add(tex)
+      for (const streaming of [true, false]) {
+        tex.streaming = streaming
+        tex.setColors("#abcdef", "#123456")
+        await tex.whenReady()
+        const child = tex.getChildren()[0]
+        expect(child).toBeInstanceOf(TextRenderable)
+        if (!(child instanceof TextRenderable)) throw new Error("Expected styled text")
+        expect(child.selectable).toBe(true)
+        expect(child.chunks.find((chunk) => chunk.text === "y")?.attributes).toBe(TextAttributes.BOLD | TextAttributes.ITALIC)
+        await output.flush()
+        expect(output.captureCharFrame()).toContain("x + y")
+      }
+    } finally {
+      output.renderer.destroy()
+    }
+  })
+
+  test("strict previews preserve unknown source and report final failures", async () => {
+    const output = await createTestRenderer({ width: 80, height: 4 })
+    try {
+      const errors: unknown[] = []
+      const tex = new TexRenderable(output.renderer, {
+        formula: String.raw`\unknown{x}`,
+        foreground: "#ffffff", background: "#000000", backend: new UnicodeTexBackend(),
+        streaming: true, strict: true, fallback: "unicode", onError: (error) => errors.push(error),
+      })
+      output.renderer.root.add(tex)
+      await output.flush()
+      expect(output.captureCharFrame()).toContain(String.raw`\unknown{x}`)
+      expect(errors).toHaveLength(0)
+      tex.streaming = false
+      await tex.whenReady()
+      expect(errors).toHaveLength(1)
+      tex.formula = String.raw`\mathbb{R}`
+      await tex.whenReady()
+      await output.flush()
+      expect(output.captureCharFrame()).toContain("ℝ")
+      expect(output.captureCharFrame()).not.toContain("TeX error")
+    } finally {
+      output.renderer.destroy()
+    }
+  })
+
+  test.each(["constructor", "__proto__"])("preserves source when preview color %s cannot be installed", async (color) => {
+    const output = await createTestRenderer({ width: 80, height: 4 })
+    try {
+      const source = `\\textcolor{${color}}{x}`
+      const tex = new TexRenderable(output.renderer, {
+        formula: source, foreground: "#ffffff", background: "#000000",
+        backend: new UnicodeTexBackend(), streaming: true, strict: true,
+      })
+      output.renderer.root.add(tex)
+      await tex.whenReady()
+      await output.flush()
+      expect(output.captureCharFrame()).toContain(source)
+      tex.formula = String.raw`\textcolor{red}{x}`
+      await tex.whenReady()
+      await output.flush()
+      expect(output.captureCharFrame()).toContain("x")
+      expect(output.captureCharFrame()).not.toContain("textcolor")
+    } finally {
+      output.renderer.destroy()
+    }
+  })
+
+  test("does not retain a Unicode preview that failed to install", async () => {
+    const output = await createTestRenderer({ width: 80, height: 4 })
+    try {
+      const tex = new TexRenderable(output.renderer, {
+        formula: String.raw`\textcolor{constructor}{x}`, foreground: "#ffffff", background: "#000000",
+        backend: { async render() { throw new Error("backend unavailable") } }, fallback: "unicode",
+      })
+      output.renderer.root.add(tex)
+      await tex.whenReady()
+      await output.flush()
+      expect(output.captureCharFrame()).toContain("TeX error: backend unavailable")
+    } finally {
+      output.renderer.destroy()
+    }
+  })
+
   test("preserves math rows under explicit and responsive width constraints", async () => {
     for (const sizing of [{ width: 5 }, { maxWidth: "100%" as const }]) {
       const { renderer, flush, captureCharFrame } = await createTestRenderer({ width: 20, height: 6 })
